@@ -6,37 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app import database
-from tests.support import make_job
+from tests.support import make_job, make_match_kwargs as match_kwargs
 
 FIRST_SCAN = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 SECOND_SCAN = FIRST_SCAN + timedelta(days=1)
-
-
-def match_kwargs(**overrides):
-    fields = dict(
-        job_unique_key="greenhouse:acme:1",
-        profile_id="test",
-        total_score=80,
-        title_score=35,
-        skills_score=20,
-        location_score=15,
-        seniority_score=10,
-        product_score=0,
-        matched_skills=["React", "Python"],
-        unmatched_skills=["AWS"],
-        skill_evidence=["React (matched 'react')"],
-        title_evidence="title matches wanted role family 'full stack'",
-        location_evidence="matches a primary Bay Area location",
-        seniority_evidence="no explicit experience requirement found; assumed compatible",
-        product_evidence=[],
-        visa_signal="unknown",
-        visa_evidence=None,
-        filtered=False,
-        filter_reason=None,
-        scored_at=FIRST_SCAN,
-    )
-    fields.update(overrides)
-    return fields
 
 
 class DatabaseTestCase(unittest.TestCase):

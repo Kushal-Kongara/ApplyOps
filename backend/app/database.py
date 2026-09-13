@@ -81,6 +81,26 @@ CREATE TABLE IF NOT EXISTS job_matches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_matches_profile_score ON job_matches (profile_id, total_score DESC);
+
+CREATE TABLE IF NOT EXISTS applications (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_unique_key    TEXT    NOT NULL UNIQUE,
+    status            TEXT    NOT NULL DEFAULT 'new'
+                      CHECK (status IN (
+                          'new', 'shortlisted', 'applying', 'applied', 'outreach_sent',
+                          'interviewing', 'rejected', 'offer', 'skipped'
+                      )),
+    applied_at        TEXT,
+    last_action_at    TEXT    NOT NULL,
+    next_follow_up_at TEXT,
+    notes             TEXT    NOT NULL DEFAULT '',
+    created_at        TEXT    NOT NULL,
+    updated_at        TEXT    NOT NULL,
+    FOREIGN KEY (job_unique_key) REFERENCES jobs (unique_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_applications_status ON applications (status);
+CREATE INDEX IF NOT EXISTS idx_applications_next_follow_up_at ON applications (next_follow_up_at);
 """
 
 _JOB_COLUMNS = (
@@ -564,6 +584,196 @@ def count_matches(
         (profile_id, min_score),
     ).fetchone()
     return int(row["n"])
+
+
+# --- applications -----------------------------------------------------------
+#
+# One row per job a user has taken any action on — created lazily by the
+# first `application-update`, never by `match`. A job with no row here is
+# implicitly "new": every query below treats a missing row the same as an
+# explicit `status = 'new'`.
+
+_APPLICATION_COLUMNS = (
+    "job_unique_key, status, applied_at, last_action_at, next_follow_up_at, "
+    "notes, created_at, updated_at"
+)
+
+# Sentinel so `upsert_application` can tell "the caller didn't mention this
+# field" (leave it alone) apart from "the caller explicitly wants it
+# cleared" (`None` is a real, meaningful value for both datetime fields).
+_UNSET = object()
+
+
+def get_application(connection: sqlite3.Connection, job_unique_key: str) -> sqlite3.Row | None:
+    """Return one job's application row, or `None` if it's never been touched."""
+    return connection.execute(
+        f"SELECT {_APPLICATION_COLUMNS} FROM applications WHERE job_unique_key = ?",
+        (job_unique_key,),
+    ).fetchone()
+
+
+def upsert_application(
+    connection: sqlite3.Connection,
+    job_unique_key: str,
+    *,
+    status: str | None = None,
+    applied_at: datetime | None = _UNSET,  # type: ignore[assignment]
+    next_follow_up_at: datetime | None = _UNSET,  # type: ignore[assignment]
+    notes: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Create or update one job's application record. Never creates a second
+    row for the same job — the `UNIQUE (job_unique_key)` constraint plus this
+    get-then-branch is the same pattern `upsert_match` uses.
+
+    `status` and `notes`: passing `None` means "leave unchanged" (or default
+    on first creation); pass `""` to explicitly clear notes. `applied_at` and
+    `next_follow_up_at`: omit the argument to leave unchanged, or pass `None`
+    explicitly to clear it — that's what the `_UNSET` sentinel default is for.
+
+    Returns `True` if this created a new row, `False` if it updated one.
+    """
+    now = now or utcnow()
+    existing = get_application(connection, job_unique_key)
+
+    if existing is None:
+        final_status = status or "new"
+        final_applied_at = None if applied_at is _UNSET else applied_at
+        if final_status == "applied" and final_applied_at is None:
+            # A first-time "mark as applied" with no explicit date is
+            # applying right now — a reasonable default, not a guess.
+            final_applied_at = now
+        final_follow_up = None if next_follow_up_at is _UNSET else next_follow_up_at
+
+        connection.execute(
+            f"INSERT INTO applications ({_APPLICATION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                job_unique_key,
+                final_status,
+                _to_iso(final_applied_at),
+                _to_iso(now),
+                _to_iso(final_follow_up),
+                notes or "",
+                _to_iso(now),
+                _to_iso(now),
+            ),
+        )
+        connection.commit()
+        return True
+
+    new_status = status if status is not None else existing["status"]
+
+    if applied_at is _UNSET:
+        new_applied_at = existing["applied_at"]
+        if new_status == "applied" and new_applied_at is None:
+            new_applied_at = _to_iso(now)
+    else:
+        new_applied_at = _to_iso(applied_at)
+
+    new_follow_up = existing["next_follow_up_at"] if next_follow_up_at is _UNSET else _to_iso(next_follow_up_at)
+    new_notes = notes if notes is not None else existing["notes"]
+
+    connection.execute(
+        """
+        UPDATE applications
+           SET status = ?,
+               applied_at = ?,
+               next_follow_up_at = ?,
+               notes = ?,
+               last_action_at = ?,
+               updated_at = ?
+         WHERE job_unique_key = ?
+        """,
+        (new_status, new_applied_at, new_follow_up, new_notes, _to_iso(now), _to_iso(now), job_unique_key),
+    )
+    connection.commit()
+    return False
+
+
+def list_applications(
+    connection: sqlite3.Connection, status: str | None = None, limit: int = 100
+) -> list[sqlite3.Row]:
+    """Return tracked applications, most recently touched first."""
+    where = "WHERE a.status = ?" if status else ""
+    params: tuple = (status, limit) if status else (limit,)
+    return connection.execute(
+        f"""
+        SELECT a.*, j.title, j.company, j.location, j.application_url
+          FROM applications a
+          JOIN jobs j ON j.unique_key = a.job_unique_key
+          {where}
+         ORDER BY a.updated_at DESC
+         LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+
+def get_daily_new_candidates(
+    connection: sqlite3.Connection,
+    profile_id: str,
+    min_score: int,
+    excluded_statuses: tuple[str, ...],
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    """Actionable, not-yet-decided jobs at or above `min_score`.
+
+    A job with no `applications` row is treated as status `'new'`. Ordering
+    (score, then freshness) matches `list_matches` exactly — this reuses the
+    matching system's ranking rather than introducing a new one.
+    """
+    placeholders = ",".join("?" for _ in excluded_statuses)
+    return connection.execute(
+        f"""
+        SELECT jm.job_unique_key, jm.total_score, jm.visa_signal, jm.visa_evidence,
+               jm.matched_skills, j.title, j.company, j.location, j.application_url,
+               j.first_seen_at, COALESCE(a.status, 'new') AS status
+          FROM job_matches jm
+          JOIN jobs j ON j.unique_key = jm.job_unique_key
+          LEFT JOIN applications a ON a.job_unique_key = jm.job_unique_key
+         WHERE jm.profile_id = ?
+           AND jm.filtered = 0
+           AND j.is_active = 1
+           AND jm.total_score >= ?
+           AND j.application_url != ''
+           AND COALESCE(a.status, 'new') NOT IN ({placeholders})
+         ORDER BY jm.total_score DESC, j.first_seen_at DESC
+         LIMIT ?
+        """,
+        (profile_id, min_score, *excluded_statuses, limit),
+    ).fetchall()
+
+
+def get_due_follow_ups(
+    connection: sqlite3.Connection,
+    profile_id: str,
+    now: datetime,
+    excluded_statuses: tuple[str, ...],
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    """Tracked applications whose `next_follow_up_at` has arrived.
+
+    Left-joins `job_matches` (rather than requiring it) since a job can be
+    tracked without ever having been scored for this profile; its score
+    then reads as `NULL`.
+    """
+    placeholders = ",".join("?" for _ in excluded_statuses)
+    return connection.execute(
+        f"""
+        SELECT a.job_unique_key, a.status, a.next_follow_up_at, a.notes,
+               j.title, j.company, j.location, j.application_url,
+               jm.total_score, jm.visa_signal, jm.visa_evidence, jm.matched_skills
+          FROM applications a
+          JOIN jobs j ON j.unique_key = a.job_unique_key
+          LEFT JOIN job_matches jm ON jm.job_unique_key = a.job_unique_key AND jm.profile_id = ?
+         WHERE a.next_follow_up_at IS NOT NULL
+           AND a.next_follow_up_at <= ?
+           AND a.status NOT IN ({placeholders})
+         ORDER BY a.next_follow_up_at ASC
+         LIMIT ?
+        """,
+        (profile_id, _to_iso(now), *excluded_statuses, limit),
+    ).fetchall()
 
 
 def _to_iso(value: datetime | None) -> str | None:

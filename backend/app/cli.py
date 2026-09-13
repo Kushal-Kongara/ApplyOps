@@ -6,6 +6,9 @@
     python -m app.cli list-matches --min-score 70 --limit 25 --show-key
     python -m app.cli inspect-match --job-key <job-unique-key>
     python -m app.cli inspect-match <search-text>
+    python -m app.cli applications --status shortlisted
+    python -m app.cli application-update <job-unique-key> --status shortlisted
+    python -m app.cli daily --profile config/profile.json
 """
 
 import argparse
@@ -19,6 +22,15 @@ from typing import Iterable, Sequence, TextIO
 import httpx
 
 from app import database
+from app.applications import (
+    HIGH_PRIORITY_MIN_SCORE,
+    REVIEW_MIN_SCORE,
+    STATUSES,
+    ApplicationError,
+    build_daily_queue,
+    parse_datetime_arg,
+    validate_status,
+)
 from app.collectors import COLLECTORS, JobCollector
 from app.config import ConfigError, SourceConfig, load_sources
 from app.matching import MatchResult, evaluate_job
@@ -430,6 +442,141 @@ def _format_inspection(row: sqlite3.Row, profile: Profile) -> str:
     return "\n".join(lines)
 
 
+def _cmd_applications(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    if args.status is not None:
+        try:
+            validate_status(args.status)
+        except ApplicationError as exc:
+            print(f"Application error: {exc}", file=sys.stderr)
+            return 2
+
+    connection = database.connect(args.db)
+    try:
+        rows = database.list_applications(connection, status=args.status, limit=args.limit)
+    finally:
+        connection.close()
+
+    if not rows:
+        print("No tracked applications yet. Use `application-update` to start tracking one.", file=out)
+        return 0
+
+    for row in rows:
+        lines = [
+            f"[{row['status']}] {row['title']} — {row['company']} ({row['location'] or 'location unknown'})",
+            f"    key: {row['job_unique_key']}",
+            f"    last action: {row['last_action_at']}",
+        ]
+        if row["applied_at"]:
+            lines.append(f"    applied: {row['applied_at']}")
+        if row["next_follow_up_at"]:
+            lines.append(f"    next follow-up: {row['next_follow_up_at']}")
+        if row["notes"]:
+            lines.append(f"    notes: {row['notes']}")
+        print("\n".join(lines), file=out)
+        print(file=out)
+
+    print(f"{len(rows)} application(s) shown.", file=out)
+    return 0
+
+
+def _cmd_application_update(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    connection = database.connect(args.db)
+    try:
+        if database.get_job(connection, args.job_key) is None:
+            print(f"No job found with key '{args.job_key}'.", file=sys.stderr)
+            return 2
+
+        # Only fields the user actually passed are included, so anything
+        # omitted keeps its existing value — `upsert_application`'s default
+        # ("leave unchanged") only kicks in for a keyword that's absent.
+        updates: dict = {}
+        try:
+            if args.status is not None:
+                updates["status"] = validate_status(args.status)
+            if args.notes is not None:
+                updates["notes"] = args.notes
+            if args.applied_at is not None:
+                updates["applied_at"] = parse_datetime_arg(args.applied_at)
+            if args.clear_follow_up:
+                updates["next_follow_up_at"] = None
+            elif args.next_follow_up_at is not None:
+                updates["next_follow_up_at"] = parse_datetime_arg(args.next_follow_up_at)
+        except ApplicationError as exc:
+            print(f"Application error: {exc}", file=sys.stderr)
+            return 2
+
+        created = database.upsert_application(connection, args.job_key, **updates)
+        row = database.get_application(connection, args.job_key)
+    finally:
+        connection.close()
+
+    verb = "Created" if created else "Updated"
+    print(f"{verb} application for '{args.job_key}': status={row['status']}", file=out)
+    return 0
+
+
+def _cmd_daily(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    try:
+        profile = load_profile(args.profile)
+    except ProfileError as exc:
+        print(f"Profile error: {exc}", file=sys.stderr)
+        return 2
+
+    connection = database.connect(args.db)
+    try:
+        queue = build_daily_queue(connection, profile.profile_id)
+    finally:
+        connection.close()
+
+    if queue.is_empty:
+        print("Nothing actionable right now.", file=out)
+        return 0
+
+    if queue.high_priority:
+        print(f"=== High priority ({HIGH_PRIORITY_MIN_SCORE}+) ===\n", file=out)
+        print("\n\n".join(_format_daily_item(item) for item in queue.high_priority), file=out)
+        print(file=out)
+
+    if queue.review:
+        print(f"=== Review candidates ({REVIEW_MIN_SCORE}-{HIGH_PRIORITY_MIN_SCORE - 1}) ===\n", file=out)
+        print("\n\n".join(_format_daily_item(item) for item in queue.review), file=out)
+        print(file=out)
+
+    if queue.follow_ups:
+        print("=== Follow-ups due ===\n", file=out)
+        print("\n\n".join(_format_daily_item(item) for item in queue.follow_ups), file=out)
+        print(file=out)
+
+    total = len(queue.high_priority) + len(queue.review) + len(queue.follow_ups)
+    print(f"{total} item(s) in today's queue.", file=out)
+    return 0
+
+
+def _format_daily_item(item) -> str:
+    """Render one `DailyItem` the way `daily` prints it."""
+    label = "NEW" if item.kind == "new" else "FOLLOW-UP"
+    score = f"{item.total_score}" if item.total_score is not None else "?"
+
+    lines = [
+        f"[{label}] {score:>3}  {item.title} — {item.company}",
+        f"    {item.location or 'location unknown'} | status: {item.status}",
+        f"    {item.application_url}",
+    ]
+    if item.visa_signal:
+        lines.append(f"    Visa: {item.visa_signal}")
+    if item.matched_skills:
+        lines.append(f"    Matched: {', '.join(item.matched_skills)}")
+    if item.kind == "follow_up" and item.next_follow_up_at is not None:
+        lines.append(f"    Follow-up was due: {item.next_follow_up_at.date().isoformat()}")
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli", description="ApplyOps job collection and match scoring."
@@ -493,6 +640,39 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--profile", default="config/profile.json", type=Path)
     inspect_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
     inspect_parser.set_defaults(handler=_cmd_inspect_match)
+
+    applications_parser = subparsers.add_parser("applications", help="Show tracked applications.")
+    applications_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    applications_parser.add_argument(
+        "--status", default=None, help="Only show applications in this status."
+    )
+    applications_parser.add_argument("--limit", default=100, type=int, help="Maximum applications to show.")
+    applications_parser.set_defaults(handler=_cmd_applications)
+
+    update_parser = subparsers.add_parser(
+        "application-update", help="Create or update one job's tracked application."
+    )
+    update_parser.add_argument("job_key", help="The job's exact unique key (see `list-matches --show-key`).")
+    update_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    update_parser.add_argument("--status", default=None)
+    update_parser.add_argument(
+        "--applied-at", default=None, help="Date/datetime this was applied to (YYYY-MM-DD or ISO-8601)."
+    )
+    update_parser.add_argument(
+        "--next-follow-up-at", default=None, help="Date/datetime to follow up (YYYY-MM-DD or ISO-8601)."
+    )
+    update_parser.add_argument(
+        "--clear-follow-up", action="store_true", help="Clear any scheduled follow-up date."
+    )
+    update_parser.add_argument("--notes", default=None, help="Replace this application's notes.")
+    update_parser.set_defaults(handler=_cmd_application_update)
+
+    daily_parser = subparsers.add_parser(
+        "daily", help="Show today's actionable jobs: high-priority matches, review candidates, and due follow-ups."
+    )
+    daily_parser.add_argument("--profile", default="config/profile.json", type=Path)
+    daily_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    daily_parser.set_defaults(handler=_cmd_daily)
 
     return parser
 
