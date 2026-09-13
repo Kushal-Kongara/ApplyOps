@@ -32,7 +32,17 @@ and a CLI.
 
 Phase 2 (deterministic filtering and match scoring) is implemented: a
 keyword-only, no-AI scoring engine that turns collected jobs into a ranked,
-explainable shortlist. Everything else below is planned, not built.
+explainable shortlist.
+
+Phase 3/4 (application tracking and the daily action queue) is implemented:
+tracked application status, follow-up reminders, and a `daily` command that
+turns the ranked shortlist into an actionable to-do list.
+
+Phase 5 (API + web dashboard) is implemented: a FastAPI layer over the
+existing CLI logic, and a React/TypeScript dashboard to browse and act on
+jobs visually instead of only from the CLI. Everything else below (DGX
+inference, recruiter discovery, resume tailoring, auto-apply, notifications)
+is planned, not built.
 
 ## Phase 1 setup
 
@@ -126,10 +136,84 @@ status is reported per job but never affects the score — see
 [docs/phase-02-matching.md](docs/phase-02-matching.md) for why, and for how
 every scoring component, alias, and filter works.
 
+## Phase 3/4 commands
+
+```bash
+cd backend
+
+# Today's actionable jobs: high-priority (70+), review (65-69), due follow-ups.
+python -m app.cli daily --profile config/profile.json
+
+# Track or update one job's application.
+python -m app.cli application-update "greenhouse:acme:12345" --status shortlisted
+python -m app.cli application-update "greenhouse:acme:12345" --status applied
+
+# Show tracked applications.
+python -m app.cli applications --status shortlisted
+```
+
+## Phase 5 setup — API + dashboard
+
+This phase adds two new local processes on top of the same SQLite database:
+a FastAPI server, and a React/TypeScript dashboard that talks to it.
+
+```bash
+# One-time: install the new API dependencies (already added to pyproject.toml).
+source .venv/bin/activate
+pip install -e .
+
+# One-time: install frontend dependencies.
+cd frontend
+npm install
+```
+
+### Run it
+
+```bash
+# Terminal 1 — backend API (from the backend/ directory)
+cd backend
+uvicorn app.api:app --reload --port 8000
+
+# Terminal 2 — frontend dev server (from the frontend/ directory)
+cd frontend
+npm run dev
+```
+
+Then open **http://localhost:5173** in your browser. The dev server proxies
+`/api/*` requests to `http://127.0.0.1:8000`, so the two run on different
+ports without you needing to configure anything else.
+
+By default the API reads `backend/data/applyops.db` and
+`backend/config/profile.json` — the same files the CLI uses — via
+`APPLYOPS_DB_PATH` / `APPLYOPS_PROFILE_PATH` env vars if you want to point
+it elsewhere (uncomment/edit them in `.env.example`).
+
+### CORS
+
+The API only allows browser requests from `http://localhost:5173` and
+`http://127.0.0.1:5173` — Vite's default dev server ports — and only for
+`GET`/`PATCH`, the only methods it exposes. This is a local, single-user
+tool with no login of its own, so CORS is opened just enough for the dev
+server to reach it directly if you ever bypass the proxy; it is not
+configured for any other origin, and doing so for a real deployment would
+need a real auth story first.
+
+### Frontend checks
+
+```bash
+cd frontend
+npm run typecheck   # tsc, no emit
+npm run build       # type-checks then builds a production bundle
+npm test            # vitest — pure logic/formatting helpers
+```
+
 ## Architecture
 
-- Python collectors (Phase 1: standard-library `sqlite3` + `httpx`)
-- FastAPI backend (later phase)
-- PostgreSQL database (later phase)
-- React and TypeScript dashboard
-- NVIDIA DGX with Ollama for local AI inference
+- Python collectors, matching, and application tracking (standard-library
+  `sqlite3` + `httpx`)
+- FastAPI backend (`backend/app/api.py`) — a thin HTTP layer over the same
+  functions the CLI uses, no duplicated business logic
+- SQLite database (still local-first; a hosted database is a later concern,
+  not a current limitation)
+- React and TypeScript dashboard (`frontend/`)
+- NVIDIA DGX with Ollama for local AI inference (later phase)

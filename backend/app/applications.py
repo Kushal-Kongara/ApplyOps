@@ -71,20 +71,30 @@ def parse_datetime_arg(value: str) -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class DailyItem:
-    """One line of the daily action queue — a job plus its tracked status."""
+    """One line of the daily action queue, the Jobs page, or Follow-ups —
+    a scored job plus its tracked status. The same shape everywhere so the
+    API (and the frontend's TS type) only needs to know one job-card shape.
+    """
 
     job_unique_key: str
     kind: str  # "new" or "follow_up"
     title: str
     company: str
     location: str
+    source: str | None
     application_url: str
     status: str
     total_score: int | None
+    title_score: int | None
+    skills_score: int | None
+    location_score: int | None
+    seniority_score: int | None
+    product_score: int | None
     visa_signal: str | None
     visa_evidence: str | None
     matched_skills: list[str] = field(default_factory=list)
     next_follow_up_at: datetime | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,38 +108,39 @@ class DailyQueue:
         return not (self.high_priority or self.review or self.follow_ups)
 
 
-def _row_to_new_item(row) -> DailyItem:
-    return DailyItem(
-        job_unique_key=row["job_unique_key"],
-        kind="new",
-        title=row["title"],
-        company=row["company"],
-        location=row["location"],
-        application_url=row["application_url"],
-        status=row["status"],
-        total_score=row["total_score"],
-        visa_signal=row["visa_signal"],
-        visa_evidence=row["visa_evidence"],
-        matched_skills=json.loads(row["matched_skills"]),
-    )
+@dataclass(frozen=True, slots=True)
+class FollowUpsPage:
+    due: list[DailyItem]
+    upcoming: list[DailyItem]
 
 
-def _row_to_follow_up_item(row) -> DailyItem:
-    matched_skills = json.loads(row["matched_skills"]) if row["matched_skills"] is not None else []
+def job_card_from_row(row, kind: str) -> DailyItem:
+    """Convert any of the query rows above (they all share this column set,
+    modulo which table each column happens to come from) into one `DailyItem`.
+    """
+    matched_skills_json = row["matched_skills"]
     next_follow_up_at = row["next_follow_up_at"]
+
     return DailyItem(
         job_unique_key=row["job_unique_key"],
-        kind="follow_up",
+        kind=kind,
         title=row["title"],
         company=row["company"],
         location=row["location"],
+        source=row["source"],
         application_url=row["application_url"],
         status=row["status"],
         total_score=row["total_score"],
+        title_score=row["title_score"],
+        skills_score=row["skills_score"],
+        location_score=row["location_score"],
+        seniority_score=row["seniority_score"],
+        product_score=row["product_score"],
         visa_signal=row["visa_signal"],
         visa_evidence=row["visa_evidence"],
-        matched_skills=matched_skills,
+        matched_skills=json.loads(matched_skills_json) if matched_skills_json else [],
         next_follow_up_at=datetime.fromisoformat(next_follow_up_at) if next_follow_up_at else None,
+        notes=row["notes"],
     )
 
 
@@ -163,7 +174,51 @@ def build_daily_queue(connection, profile_id: str, now: datetime | None = None) 
     follow_up_rows = database.get_due_follow_ups(connection, profile_id, now, FOLLOW_UP_EXCLUDED_STATUSES)
 
     return DailyQueue(
-        high_priority=[_row_to_new_item(row) for row in high_rows],
-        review=[_row_to_new_item(row) for row in review_rows],
-        follow_ups=[_row_to_follow_up_item(row) for row in follow_up_rows],
+        high_priority=[job_card_from_row(row, "new") for row in high_rows],
+        review=[job_card_from_row(row, "new") for row in review_rows],
+        follow_ups=[job_card_from_row(row, "follow_up") for row in follow_up_rows],
     )
+
+
+def list_scored_jobs(
+    connection,
+    profile_id: str,
+    min_score: int = 0,
+    limit: int = 500,
+    search: str | None = None,
+    status: str | None = None,
+) -> list[DailyItem]:
+    """All non-filtered scored jobs for one profile, as job cards.
+
+    A thin wrapper around `database.list_matches` — same ordering, same
+    filters, just converted to the one shared job-card shape the API and
+    the daily queue both use.
+    """
+    rows = database.list_matches(
+        connection, profile_id, min_score=min_score, limit=limit, search=search, status=status
+    )
+    return [job_card_from_row(row, "new") for row in rows]
+
+
+def get_scored_job(connection, job_unique_key: str, profile_id: str) -> DailyItem | None:
+    """One scored job as a job card, or `None` if it's never been scored for this profile."""
+    row = database.get_match(connection, job_unique_key, profile_id)
+    return job_card_from_row(row, "new") if row is not None else None
+
+
+def list_follow_ups(connection, profile_id: str, now: datetime | None = None) -> FollowUpsPage:
+    """All tracked follow-ups for one profile, split into due and upcoming.
+
+    Unlike `build_daily_queue`'s `follow_ups` (due reminders only, for a
+    short daily summary), this is for a dedicated Follow-ups page that also
+    wants to show what's coming up next.
+    """
+    now = now or database.utcnow()
+
+    rows = database.list_follow_ups(connection, profile_id, FOLLOW_UP_EXCLUDED_STATUSES)
+    items = [job_card_from_row(row, "follow_up") for row in rows]
+
+    due = [item for item in items if item.next_follow_up_at is not None and item.next_follow_up_at <= now]
+    upcoming = [item for item in items if item.next_follow_up_at is not None and item.next_follow_up_at > now]
+
+    return FollowUpsPage(due=due, upcoming=upcoming)

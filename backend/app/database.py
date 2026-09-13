@@ -116,7 +116,15 @@ def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     if path.parent and str(path.parent) not in ("", "."):
         path.parent.mkdir(parents=True, exist_ok=True)
 
-    connection = sqlite3.connect(path)
+    # check_same_thread=False: the API layer (app/api.py) hands each
+    # request's connection through FastAPI's sync-endpoint threadpool,
+    # where dependency resolution and the route body aren't guaranteed to
+    # run on the same worker thread. Each request still gets its own
+    # connection (see api.get_connection) and this process handles one
+    # request at a time in practice, so this doesn't introduce real
+    # concurrent access to a single connection — it just stops sqlite3's
+    # same-thread check from rejecting the thread hand-off above.
+    connection = sqlite3.connect(path, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     create_schema(connection)
     return connection
@@ -533,26 +541,49 @@ def list_matches(
     min_score: int = 0,
     limit: int = 25,
     include_filtered: bool = False,
+    search: str | None = None,
+    status: str | None = None,
 ) -> list[sqlite3.Row]:
     """Return scored jobs for one profile, best/freshest first.
 
-    Joins in the job's own display fields (title, company, location, ...) so
-    callers don't need a second query per row.
+    Joins in the job's own display fields (title, company, location, ...)
+    and the tracked application's status/notes/follow-up date (a job with no
+    `applications` row reads as status `'new'`), so callers don't need a
+    second query per row. `search` (title/company substring) and `status`
+    are optional filters layered on top of the exact same base query and
+    ordering the CLI's `list-matches` already used — they narrow the result
+    set, they never change how it's ranked.
     """
     filter_clause = "" if include_filtered else "AND jm.filtered = 0"
+    extra_clauses = []
+    params: list = [profile_id, min_score]
+
+    if search:
+        extra_clauses.append("AND (j.title LIKE ? OR j.company LIKE ?)")
+        needle = f"%{search}%"
+        params += [needle, needle]
+    if status:
+        extra_clauses.append("AND COALESCE(a.status, 'new') = ?")
+        params.append(status)
+
+    params.append(limit)
+
     return connection.execute(
         f"""
         SELECT jm.*, j.title, j.company, j.location, j.source, j.application_url,
-               j.first_seen_at
+               j.first_seen_at, COALESCE(a.status, 'new') AS status,
+               a.next_follow_up_at, a.notes
           FROM job_matches jm
           JOIN jobs j ON j.unique_key = jm.job_unique_key
+          LEFT JOIN applications a ON a.job_unique_key = jm.job_unique_key
          WHERE jm.profile_id = ?
            AND jm.total_score >= ?
            {filter_clause}
+           {' '.join(extra_clauses)}
          ORDER BY jm.total_score DESC, j.first_seen_at DESC
          LIMIT ?
         """,
-        (profile_id, min_score, limit),
+        params,
     ).fetchall()
 
 
@@ -563,9 +594,11 @@ def get_match(
     return connection.execute(
         """
         SELECT jm.*, j.title, j.company, j.location, j.source, j.description,
-               j.application_url, j.first_seen_at
+               j.application_url, j.first_seen_at, COALESCE(a.status, 'new') AS status,
+               a.next_follow_up_at, a.notes
           FROM job_matches jm
           JOIN jobs j ON j.unique_key = jm.job_unique_key
+          LEFT JOIN applications a ON a.job_unique_key = jm.job_unique_key
          WHERE jm.job_unique_key = ? AND jm.profile_id = ?
         """,
         (job_unique_key, profile_id),
@@ -725,9 +758,12 @@ def get_daily_new_candidates(
     placeholders = ",".join("?" for _ in excluded_statuses)
     return connection.execute(
         f"""
-        SELECT jm.job_unique_key, jm.total_score, jm.visa_signal, jm.visa_evidence,
-               jm.matched_skills, j.title, j.company, j.location, j.application_url,
-               j.first_seen_at, COALESCE(a.status, 'new') AS status
+        SELECT jm.job_unique_key, jm.total_score, jm.title_score, jm.skills_score,
+               jm.location_score, jm.seniority_score, jm.product_score,
+               jm.visa_signal, jm.visa_evidence, jm.matched_skills,
+               j.title, j.company, j.location, j.source, j.application_url,
+               j.first_seen_at, COALESCE(a.status, 'new') AS status,
+               a.next_follow_up_at, a.notes
           FROM job_matches jm
           JOIN jobs j ON j.unique_key = jm.job_unique_key
           LEFT JOIN applications a ON a.job_unique_key = jm.job_unique_key
@@ -761,8 +797,10 @@ def get_due_follow_ups(
     return connection.execute(
         f"""
         SELECT a.job_unique_key, a.status, a.next_follow_up_at, a.notes,
-               j.title, j.company, j.location, j.application_url,
-               jm.total_score, jm.visa_signal, jm.visa_evidence, jm.matched_skills
+               j.title, j.company, j.location, j.source, j.application_url,
+               jm.total_score, jm.title_score, jm.skills_score, jm.location_score,
+               jm.seniority_score, jm.product_score,
+               jm.visa_signal, jm.visa_evidence, jm.matched_skills
           FROM applications a
           JOIN jobs j ON j.unique_key = a.job_unique_key
           LEFT JOIN job_matches jm ON jm.job_unique_key = a.job_unique_key AND jm.profile_id = ?
@@ -773,6 +811,38 @@ def get_due_follow_ups(
          LIMIT ?
         """,
         (profile_id, _to_iso(now), *excluded_statuses, limit),
+    ).fetchall()
+
+
+def list_follow_ups(
+    connection: sqlite3.Connection,
+    profile_id: str,
+    excluded_statuses: tuple[str, ...],
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    """Every tracked application with a follow-up date set, due or not.
+
+    Same shape as `get_due_follow_ups`, minus the "due" time filter — for a
+    Follow-ups page that needs to show upcoming reminders too, not just the
+    ones that have already arrived.
+    """
+    placeholders = ",".join("?" for _ in excluded_statuses)
+    return connection.execute(
+        f"""
+        SELECT a.job_unique_key, a.status, a.next_follow_up_at, a.notes,
+               j.title, j.company, j.location, j.source, j.application_url,
+               jm.total_score, jm.title_score, jm.skills_score, jm.location_score,
+               jm.seniority_score, jm.product_score,
+               jm.visa_signal, jm.visa_evidence, jm.matched_skills
+          FROM applications a
+          JOIN jobs j ON j.unique_key = a.job_unique_key
+          LEFT JOIN job_matches jm ON jm.job_unique_key = a.job_unique_key AND jm.profile_id = ?
+         WHERE a.next_follow_up_at IS NOT NULL
+           AND a.status NOT IN ({placeholders})
+         ORDER BY a.next_follow_up_at ASC
+         LIMIT ?
+        """,
+        (profile_id, *excluded_statuses, limit),
     ).fetchall()
 
 
