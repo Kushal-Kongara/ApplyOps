@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.matching.text import any_phrase_matches, normalize_text
+from app.resume.evidence import recognized_facts
 from app.resume.tailor import keyword_universe
 
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
@@ -58,9 +59,11 @@ def _normalized_words(text: str) -> set[str]:
     return set(normalize_text(text).split())
 
 
-def _check_technology_claims(original_normalized: str, rewritten_normalized: str, allowed_normalized: set[str]) -> list[str]:
+def _check_technology_claims(
+    original_normalized: str, rewritten_normalized: str, allowed_normalized: set[str], vocabulary: dict[str, list[str]],
+) -> list[str]:
     reasons = []
-    for name, phrases in keyword_universe().items():
+    for name, phrases in vocabulary.items():
         if not any_phrase_matches(rewritten_normalized, phrases):
             continue
         name_normalized = normalize_text(name)
@@ -99,13 +102,9 @@ def _check_leadership_claims(original_words: set[str], rewritten_words: set[str]
     return reasons
 
 
-def _recognized_facts(text_normalized: str) -> set[str]:
-    """Canonical skill/technology names (from the same vocabulary tailoring
-    itself uses) that this text demonstrably mentions."""
-    return {name for name, phrases in keyword_universe().items() if any_phrase_matches(text_normalized, phrases)}
-
-
-def _check_retention(original_normalized: str, rewritten_normalized: str, target_emphasis: list[str]) -> list[str]:
+def _check_retention(
+    original_normalized: str, rewritten_normalized: str, target_emphasis: list[str], vocabulary: dict[str, list[str]],
+) -> list[str]:
     """Reject a rewrite that quietly drops the facts a bullet was actually
     selected to emphasize, or that collapses into something vague enough to
     have lost most of what the original demonstrated.
@@ -124,8 +123,8 @@ def _check_retention(original_normalized: str, rewritten_normalized: str, target
        added was false.
     """
     reasons: list[str] = []
-    original_facts = _recognized_facts(original_normalized)
-    rewritten_facts = _recognized_facts(rewritten_normalized)
+    original_facts = recognized_facts(original_normalized, vocabulary)
+    rewritten_facts = recognized_facts(rewritten_normalized, vocabulary)
 
     missing_emphasis = [fact for fact in target_emphasis if fact in original_facts and fact not in rewritten_facts]
     if missing_emphasis:
@@ -145,7 +144,11 @@ def _check_retention(original_normalized: str, rewritten_normalized: str, target
 
 
 def validate_rewrite(
-    original_text: str, rewritten_text: str, allowed_facts: list[str], target_emphasis: list[str] | None = None,
+    original_text: str,
+    rewritten_text: str,
+    allowed_facts: list[str],
+    target_emphasis: list[str] | None = None,
+    evidence_vocabulary: dict[str, list[str]] | None = None,
 ) -> ValidationResult:
     """Accept a rewrite only if every technology, number, duration, and
     leadership/scope claim it makes is already present in `original_text`
@@ -160,9 +163,18 @@ def validate_rewrite(
     subset of this bullet's facts the job actually cares about; omit it
     (or pass an empty list) to skip the emphasis-specific check while still
     applying the general retention ratio.
+
+    `evidence_vocabulary` is what counts as a "recognized fact" for the
+    technology and retention checks — pass
+    `app.resume.evidence.build_evidence_vocabulary(master)` so a skill
+    listed in the candidate's own master resume is recognized as evidence
+    even if the job-matching alias table (`keyword_universe()`, the
+    fallback when this is omitted) has no entry for it.
     """
     if not rewritten_text.strip():
         return ValidationResult(accepted=False, reasons=["empty rewrite"])
+
+    vocabulary = evidence_vocabulary if evidence_vocabulary is not None else keyword_universe()
 
     original_normalized = normalize_text(original_text)
     rewritten_normalized = normalize_text(rewritten_text)
@@ -171,10 +183,10 @@ def validate_rewrite(
     rewritten_words = _normalized_words(rewritten_text)
 
     reasons: list[str] = []
-    reasons += _check_technology_claims(original_normalized, rewritten_normalized, allowed_normalized)
+    reasons += _check_technology_claims(original_normalized, rewritten_normalized, allowed_normalized, vocabulary)
     reasons += _check_numeric_claims(original_text, rewritten_text)
     reasons += _check_duration_claims(original_text, rewritten_text)
     reasons += _check_leadership_claims(original_words, rewritten_words)
-    reasons += _check_retention(original_normalized, rewritten_normalized, target_emphasis or [])
+    reasons += _check_retention(original_normalized, rewritten_normalized, target_emphasis or [], vocabulary)
 
     return ValidationResult(accepted=len(reasons) == 0, reasons=reasons)

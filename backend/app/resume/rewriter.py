@@ -10,10 +10,10 @@ directly or a rewrite that passed `app/resume/validator.py`.
 
 from dataclasses import replace
 
-from app.matching.text import any_phrase_matches, normalize_text
+from app.matching.text import normalize_text
+from app.resume.evidence import build_evidence_vocabulary, recognized_facts
 from app.resume.llm_provider import RewriteRequest, ResumeLLMProvider, ResumeLLMProviderError
-from app.resume.models import RewriteAttempt, TailoredExperienceEntry, TailoredResume, TailoringAnalysis
-from app.resume.tailor import keyword_universe
+from app.resume.models import MasterResume, RewriteAttempt, TailoredExperienceEntry, TailoredResume, TailoringAnalysis
 from app.resume.validator import validate_rewrite
 
 # A resume-wide cap, not a per-job tuning knob: keeps DGX load and latency
@@ -27,15 +27,16 @@ MAX_REWRITES_PER_RESUME = 6
 JD_EXCERPT_MAX_CHARS = 800
 
 
-def _bullet_facts(bullet_text: str) -> list[str]:
+def _bullet_facts(bullet_text: str, vocabulary: dict[str, list[str]]) -> list[str]:
     """Technology/skill names this bullet's own text already demonstrates —
-    the only facts a rewrite of this bullet is allowed to state."""
-    text_normalized = normalize_text(bullet_text)
-    return [name for name, phrases in keyword_universe().items() if any_phrase_matches(text_normalized, phrases)]
+    the only facts a rewrite of this bullet is allowed to state. `vocabulary`
+    should come from `build_evidence_vocabulary()` so a master-resume-only
+    skill (no job-matching alias) is still recognized here."""
+    return list(recognized_facts(normalize_text(bullet_text), vocabulary))
 
 
 def _select_bullets_for_rewrite(
-    tailored: TailoredResume, analysis: TailoringAnalysis, max_rewrites: int
+    tailored: TailoredResume, analysis: TailoringAnalysis, vocabulary: dict[str, list[str]], max_rewrites: int
 ) -> list[tuple[str, str, str]]:
     """The most relevant bullet from each experience entry (tailoring
     already sorted each entry's bullets by relevance — index 0 is the
@@ -49,7 +50,7 @@ def _select_bullets_for_rewrite(
         if entry.id not in analysis.selected_experience:
             continue
         top_bullet = entry.bullets[0]
-        facts = _bullet_facts(top_bullet.text)
+        facts = _bullet_facts(top_bullet.text, vocabulary)
         if not any(normalize_text(fact) in strong_matches_normalized for fact in facts):
             continue
         candidates.append((entry.id, top_bullet.evidence_id, top_bullet.text))
@@ -60,6 +61,7 @@ def _select_bullets_for_rewrite(
 def rewrite_tailored_resume(
     tailored: TailoredResume,
     analysis: TailoringAnalysis,
+    master: MasterResume,
     job_title: str,
     job_description: str,
     provider: ResumeLLMProvider,
@@ -67,11 +69,17 @@ def rewrite_tailored_resume(
 ) -> tuple[TailoredResume, list[RewriteAttempt]]:
     """Attempt to rewrite a bounded set of the most job-relevant bullets.
 
+    `master` is the same master resume `tailored`/`analysis` were built
+    from — it's the source of truth for `build_evidence_vocabulary()`, so a
+    skill listed there is recognized as evidence even without a matching
+    job-matching alias.
+
     Returns a new `TailoredResume` (accepted rewrites applied, everything
     else untouched) plus the full list of attempts — accepted, rejected,
     and errored alike.
     """
-    selected = _select_bullets_for_rewrite(tailored, analysis, max_rewrites)
+    vocabulary = build_evidence_vocabulary(master)
+    selected = _select_bullets_for_rewrite(tailored, analysis, vocabulary, max_rewrites)
     if not selected:
         return tailored, []
 
@@ -82,7 +90,7 @@ def rewrite_tailored_resume(
     attempts: list[RewriteAttempt] = []
 
     for _entry_id, evidence_id, original_text in selected:
-        allowed_facts = _bullet_facts(original_text)
+        allowed_facts = _bullet_facts(original_text, vocabulary)
         target_emphasis = [fact for fact in allowed_facts if normalize_text(fact) in strong_matches_normalized]
 
         request = RewriteRequest(
@@ -105,7 +113,10 @@ def rewrite_tailored_resume(
             )
             continue
 
-        result = validate_rewrite(original_text, response.rewritten_bullet, allowed_facts, target_emphasis=target_emphasis)
+        result = validate_rewrite(
+            original_text, response.rewritten_bullet, allowed_facts,
+            target_emphasis=target_emphasis, evidence_vocabulary=vocabulary,
+        )
         if result.accepted:
             accepted_text_by_evidence_id[evidence_id] = response.rewritten_bullet
             attempts.append(

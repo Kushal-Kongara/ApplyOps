@@ -89,6 +89,13 @@ class OllamaResumeProvider(ResumeLLMProvider):
                     "prompt": prompt,
                     "format": "json",
                     "stream": False,
+                    # Hybrid-reasoning models (e.g. Qwen3) otherwise put their
+                    # actual output in a separate "thinking" field and leave
+                    # "response" empty even with format="json" -- this asks
+                    # for the direct answer in "response", which is the only
+                    # field this provider ever reads. A no-op for models
+                    # without a thinking mode (e.g. Llama 3.2).
+                    "think": False,
                     "options": {"temperature": 0.2},
                 },
             )

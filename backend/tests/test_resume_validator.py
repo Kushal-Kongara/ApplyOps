@@ -5,7 +5,11 @@ rule."""
 
 import unittest
 
+from app.resume.evidence import build_evidence_vocabulary
+from app.resume.master import load_master_resume
+from app.resume.tailor import keyword_universe
 from app.resume.validator import validate_rewrite
+from tests.support import make_master_resume_dict
 
 ORIGINAL = (
     "Built production full-stack features using React, TypeScript, JavaScript, "
@@ -219,6 +223,103 @@ class RetentionGateTest(unittest.TestCase):
         # count -- the other safety checks still apply normally.
         original = "Coordinated closely with the design team to refine the onboarding experience."
         result = validate_rewrite(original, "Worked closely with design to improve onboarding.", allowed_facts=[])
+        self.assertTrue(result.accepted)
+
+
+def _master_with_html_css():
+    import json
+    import tempfile
+    from pathlib import Path
+
+    payload = make_master_resume_dict()
+    payload["skills"] = {"languages": ["HTML", "CSS", "JavaScript"], "frontend": ["React"]}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "resume_master.json"
+        path.write_text(json.dumps(payload))
+        return load_master_resume(path)
+
+
+class MasterResumeEvidenceVocabularyTest(unittest.TestCase):
+    """Reproduces the real gap found during the Qwen benchmark: HTML/CSS
+    are truthful skills in the master resume but have no job-matching
+    alias entry. The retention validator must recognize them as evidence
+    without hardcoding them -- these tests would pass equally for any other
+    master-only skill."""
+
+    DISPATCHTRACK_BULLET = (
+        "Built responsive frontend interfaces and reusable UI components using HTML, CSS, "
+        "JavaScript, and React, integrating user-facing workflows with backend services."
+    )
+
+    def setUp(self):
+        self.master = _master_with_html_css()
+        self.vocabulary = build_evidence_vocabulary(self.master)
+        self.assertNotIn("HTML", keyword_universe())  # sanity: genuinely master-only
+
+    def test_master_only_skill_is_recognized_as_evidence(self):
+        # A rewrite keeping HTML/CSS is fine; the important thing is that
+        # recognizing them doesn't depend on a matching-alias entry.
+        result = validate_rewrite(
+            self.DISPATCHTRACK_BULLET,
+            "Built responsive frontend interfaces and reusable UI components using HTML, CSS, JavaScript, and React.",
+            allowed_facts=["HTML", "CSS", "JavaScript", "React"],
+            evidence_vocabulary=self.vocabulary,
+        )
+        self.assertTrue(result.accepted)
+
+    def test_dropping_most_master_only_facts_triggers_retention_rejection(self):
+        # Drops HTML, CSS, and JavaScript -- keeps only React (1 of 4
+        # recognized facts). Under the old keyword_universe-only vocabulary
+        # this bullet only had 2 recognized facts (React, JavaScript) and
+        # this exact rewrite would have scored 1/2 = 50%, right at the
+        # threshold -- accepted. With HTML/CSS counted, it's 1/4 = 25%.
+        result = validate_rewrite(
+            self.DISPATCHTRACK_BULLET,
+            "Built responsive frontend interfaces and reusable UI components using React.",
+            allowed_facts=["HTML", "CSS", "JavaScript", "React"],
+            evidence_vocabulary=self.vocabulary,
+        )
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("retains too little" in reason for reason in result.reasons))
+
+    def test_dropping_one_non_target_master_only_fact_still_passes(self):
+        # Drops only "HTML" (not in target_emphasis) -- keeps 3 of 4
+        # recognized facts, well above the retention threshold.
+        result = validate_rewrite(
+            self.DISPATCHTRACK_BULLET,
+            "Built responsive frontend interfaces and reusable UI components using CSS, JavaScript, and React.",
+            allowed_facts=["HTML", "CSS", "JavaScript", "React"],
+            target_emphasis=["React", "JavaScript"],
+            evidence_vocabulary=self.vocabulary,
+        )
+        self.assertTrue(result.accepted)
+
+    def test_unsupported_skill_is_still_rejected_alongside_the_wider_vocabulary(self):
+        # Widening the vocabulary must never widen what's *allowed to be
+        # added* -- Kubernetes is still absent from both the original text
+        # and allowed_facts, so it's still rejected.
+        result = validate_rewrite(
+            self.DISPATCHTRACK_BULLET,
+            "Built responsive frontend interfaces and reusable UI components using HTML, CSS, JavaScript, React, and Kubernetes.",
+            allowed_facts=["HTML", "CSS", "JavaScript", "React"],
+            evidence_vocabulary=self.vocabulary,
+        )
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("Kubernetes" in reason for reason in result.reasons))
+
+    def test_omitting_evidence_vocabulary_keeps_the_old_matching_only_behavior(self):
+        # Existing callers that don't pass evidence_vocabulary (e.g. any
+        # test written before this fix) are unaffected: HTML/CSS are
+        # invisible to the retention count exactly as before, so dropping
+        # them alongside JavaScript here scores 1 of the 2 previously
+        # recognized facts (React) -- 50%, right at the threshold, accepted
+        # -- the same behavior the pre-fix real-DGX benchmark runs actually
+        # exercised.
+        result = validate_rewrite(
+            self.DISPATCHTRACK_BULLET,
+            "Built responsive frontend interfaces and reusable UI components using React.",
+            allowed_facts=["HTML", "CSS", "JavaScript", "React"],
+        )
         self.assertTrue(result.accepted)
 
 

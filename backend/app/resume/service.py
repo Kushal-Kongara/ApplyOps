@@ -87,7 +87,7 @@ def generate_resume_version(
             raise LLMUnavailableError(provider_status.error or f"The configured {provider.name} provider is not reachable.")
 
         tailored, rewrite_attempts = rewrite_tailored_resume(
-            tailored, analysis, job_row["title"], job_row["description"], provider,
+            tailored, analysis, master, job_row["title"], job_row["description"], provider,
         )
         provider_name = provider.name
         model_name = provider.model

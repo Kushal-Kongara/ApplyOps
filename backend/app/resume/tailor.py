@@ -54,7 +54,7 @@ _EXTRA_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def _flatten_skills(skills: dict[str, list[str]]) -> list[str]:
+def flatten_skills(skills: dict[str, list[str]]) -> list[str]:
     """Master skills, categories in declared order, de-duplicated by name
     (case-insensitive) while keeping each skill's first-seen spelling."""
     seen: dict[str, str] = {}
@@ -86,7 +86,7 @@ def tailor_resume(master: MasterResume, job_description: str) -> tuple[TailoredR
     """
     jd_normalized = normalize_text(job_description)
     universe = keyword_universe()
-    flat_skills = _flatten_skills(master.skills)
+    flat_skills = flatten_skills(master.skills)
     flat_skills_normalized = {normalize_text(s) for s in flat_skills}
 
     jd_keywords = [name for name, phrases in universe.items() if any_phrase_matches(jd_normalized, phrases)]

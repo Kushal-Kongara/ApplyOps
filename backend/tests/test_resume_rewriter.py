@@ -20,6 +20,24 @@ def _load_master():
         return load_master_resume(path)
 
 
+def _load_master_with_html_css():
+    payload = make_master_resume_dict()
+    payload["experience"][0]["bullets"] = [
+        {
+            "id": "exp_acme_b1",
+            "text": (
+                "Built responsive frontend interfaces and reusable UI components using HTML, CSS, "
+                "JavaScript, and React, integrating user-facing workflows with backend services."
+            ),
+        },
+    ]
+    payload["skills"] = {"languages": ["HTML", "CSS", "JavaScript"], "frontend": ["React"]}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "resume_master.json"
+        path.write_text(json.dumps(payload))
+        return load_master_resume(path)
+
+
 class FakeProvider(ResumeLLMProvider):
     name = "fake"
 
@@ -58,7 +76,7 @@ class RewriteTailoredResumeTest(unittest.TestCase):
 
     def test_accepted_rewrite_replaces_the_bullet_text(self):
         provider = FakeProvider(lambda req: RewriteResponse(rewritten_bullet="Built customer-facing product features using React and TypeScript."))
-        updated, attempts = rewrite_tailored_resume(self.tailored, self.analysis, "Software Engineer", "React Python job", provider)
+        updated, attempts = rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Software Engineer", "React Python job", provider)
 
         self.assertTrue(any(a.validation_status == "accepted" for a in attempts))
         accepted = next(a for a in attempts if a.validation_status == "accepted")
@@ -67,7 +85,7 @@ class RewriteTailoredResumeTest(unittest.TestCase):
 
     def test_rejected_rewrite_falls_back_to_original_text(self):
         provider = FakeProvider(lambda req: RewriteResponse(rewritten_bullet=req.original_bullet + " Deployed with Kubernetes."))
-        updated, attempts = rewrite_tailored_resume(self.tailored, self.analysis, "Software Engineer", "React Python job", provider)
+        updated, attempts = rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Software Engineer", "React Python job", provider)
 
         self.assertTrue(any(a.validation_status == "rejected" for a in attempts))
         original_texts = {b.text for entry in self.tailored.experience for b in entry.bullets}
@@ -78,7 +96,7 @@ class RewriteTailoredResumeTest(unittest.TestCase):
 
     def test_provider_failure_is_recorded_and_falls_back_to_original(self):
         updated, attempts = rewrite_tailored_resume(
-            self.tailored, self.analysis, "Software Engineer", "React Python job", FailingProvider(),
+            self.tailored, self.analysis, self.master, "Software Engineer", "React Python job", FailingProvider(),
         )
         self.assertTrue(any(a.validation_status == "error" for a in attempts))
         error_attempt = next(a for a in attempts if a.validation_status == "error")
@@ -93,7 +111,7 @@ class RewriteTailoredResumeTest(unittest.TestCase):
         provider = FakeProvider(
             lambda req: RewriteResponse(rewritten_bullet="Built customer-facing product features using React and TypeScript.")
         )
-        _, attempts = rewrite_tailored_resume(self.tailored, self.analysis, "Software Engineer", "React Python job", provider)
+        _, attempts = rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Software Engineer", "React Python job", provider)
         accepted = next(a for a in attempts if a.validation_status == "accepted")
         # The original text is preserved in provenance regardless of outcome.
         self.assertTrue(len(accepted.original_text) > 0)
@@ -101,20 +119,20 @@ class RewriteTailoredResumeTest(unittest.TestCase):
 
     def test_provenance_includes_provider_and_model_name(self):
         provider = FakeProvider(model_name="llama3.1")
-        _, attempts = rewrite_tailored_resume(self.tailored, self.analysis, "Software Engineer", "React Python job", provider)
+        _, attempts = rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Software Engineer", "React Python job", provider)
         self.assertTrue(all(a.provider == "fake" and a.model == "llama3.1" for a in attempts))
 
     def test_rewrite_attempts_are_bounded_by_max_rewrites(self):
         provider = FakeProvider()
         _, attempts = rewrite_tailored_resume(
-            self.tailored, self.analysis, "Software Engineer", "React Python job", provider, max_rewrites=1,
+            self.tailored, self.analysis, self.master, "Software Engineer", "React Python job", provider, max_rewrites=1,
         )
         self.assertLessEqual(len(attempts), 1)
 
     def test_no_relevant_bullets_means_no_attempts(self):
         tailored, analysis = tailor_resume(self.master, "Completely unrelated posting about gardening.")
         provider = FakeProvider()
-        updated, attempts = rewrite_tailored_resume(tailored, analysis, "Gardener", "gardening job", provider)
+        updated, attempts = rewrite_tailored_resume(tailored, analysis, self.master, "Gardener", "gardening job", provider)
         self.assertEqual(attempts, [])
         self.assertEqual(provider.calls, [])
         self.assertEqual(updated, tailored)
@@ -128,13 +146,49 @@ class RewriteTailoredResumeTest(unittest.TestCase):
             return RewriteResponse(rewritten_bullet=request.original_bullet)
 
         provider = FakeProvider(capture)
-        rewrite_tailored_resume(self.tailored, self.analysis, "Software Engineer", malicious_jd, provider)
+        rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Software Engineer", malicious_jd, provider)
         self.assertTrue(captured)
         # The JD text is passed through as data (jd_excerpt) — the rewriter
         # itself does no string concatenation that could turn it into an
         # instruction; prompt-level delimiting is covered in
         # test_resume_rewrite_prompt.py.
         self.assertIn("HACKED", captured[0].jd_excerpt)
+
+
+class MasterResumeVocabularyEndToEndTest(unittest.TestCase):
+    """`rewrite_tailored_resume` must build its evidence vocabulary from
+    the actual `master` it's given -- not just the job-matching alias
+    table -- so this exercises the real wiring, not just `validate_rewrite`
+    in isolation."""
+
+    def setUp(self):
+        self.master = _load_master_with_html_css()
+        self.tailored, self.analysis = tailor_resume(self.master, "Looking for a React frontend engineer.")
+
+    def test_dropping_html_css_end_to_end_triggers_retention_rejection(self):
+        provider = FakeProvider(
+            lambda req: RewriteResponse(
+                rewritten_bullet="Built responsive frontend interfaces and reusable UI components using React."
+            )
+        )
+        updated, attempts = rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Frontend Engineer", "React job", provider)
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0].validation_status, "rejected")
+        self.assertTrue(any("retains too little" in reason for reason in attempts[0].validation_reasons))
+        # Fell back to the original, HTML/CSS-intact bullet.
+        rendered_texts = [b.text for entry in updated.experience for b in entry.bullets]
+        self.assertIn("HTML", " ".join(rendered_texts))
+        self.assertIn("CSS", " ".join(rendered_texts))
+
+    def test_keeping_html_css_end_to_end_is_accepted(self):
+        provider = FakeProvider(
+            lambda req: RewriteResponse(
+                rewritten_bullet="Built responsive frontend interfaces using HTML, CSS, JavaScript, and React."
+            )
+        )
+        _, attempts = rewrite_tailored_resume(self.tailored, self.analysis, self.master, "Frontend Engineer", "React job", provider)
+        self.assertEqual(attempts[0].validation_status, "accepted")
 
 
 if __name__ == "__main__":
