@@ -103,11 +103,28 @@ class DashboardSummary(BaseModel):
     applications_total: int
 
 
+class RefreshSummary(BaseModel):
+    """Compact refresh metadata for the dashboard's "last refreshed" indicator.
+
+    Sourced from `refresh_runs` (see `app/refresh.py`) — never recomputed.
+    """
+
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    jobs_new: int
+    jobs_updated: int
+    high_priority_new: int
+    review_new: int
+    error_message: str | None
+
+
 class DashboardResponse(BaseModel):
     summary: DashboardSummary
     high_priority: list[JobCard]
     review_candidates: list[JobCard]
     follow_ups: list[JobCard]
+    last_refresh: RefreshSummary | None
 
 
 class FollowUpsResponse(BaseModel):
@@ -193,6 +210,22 @@ def get_dashboard(
     queue = applications.build_daily_queue(connection, profile.profile_id)
     applications_total = len(database.list_applications(connection, limit=100_000))
 
+    refresh_row = database.get_latest_refresh_run(connection, profile.profile_id)
+    last_refresh = (
+        RefreshSummary(
+            started_at=refresh_row["started_at"],
+            finished_at=refresh_row["finished_at"],
+            status=refresh_row["status"],
+            jobs_new=refresh_row["jobs_new"],
+            jobs_updated=refresh_row["jobs_updated"],
+            high_priority_new=refresh_row["high_priority_new"],
+            review_new=refresh_row["review_new"],
+            error_message=refresh_row["error_message"],
+        )
+        if refresh_row is not None
+        else None
+    )
+
     return DashboardResponse(
         summary=DashboardSummary(
             high_priority=len(queue.high_priority),
@@ -203,6 +236,7 @@ def get_dashboard(
         high_priority=[JobCard.model_validate(item) for item in queue.high_priority],
         review_candidates=[JobCard.model_validate(item) for item in queue.review],
         follow_ups=[JobCard.model_validate(item) for item in queue.follow_ups],
+        last_refresh=last_refresh,
     )
 
 

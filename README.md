@@ -40,9 +40,13 @@ turns the ranked shortlist into an actionable to-do list.
 
 Phase 5 (API + web dashboard) is implemented: a FastAPI layer over the
 existing CLI logic, and a React/TypeScript dashboard to browse and act on
-jobs visually instead of only from the CLI. Everything else below (DGX
-inference, recruiter discovery, resume tailoring, auto-apply, notifications)
-is planned, not built.
+jobs visually instead of only from the CLI.
+
+Phase 6 (automatic refresh) is implemented: one `refresh` pipeline (collect
+every source, then match) that's callable manually or on a schedule, plus a
+local scheduler that runs it immediately and then every 2 hours. Everything
+else below (DGX inference, recruiter discovery, resume tailoring, auto-apply,
+notifications) is planned, not built.
 
 ## Phase 1 setup
 
@@ -177,11 +181,17 @@ uvicorn app.api:app --reload --port 8000
 # Terminal 2 — frontend dev server (from the frontend/ directory)
 cd frontend
 npm run dev
+
+# Terminal 3 — scheduler: refreshes data every 2 hours (see Phase 6 below)
+cd backend
+python -m app.scheduler
 ```
 
 Then open **http://localhost:5173** in your browser. The dev server proxies
 `/api/*` requests to `http://127.0.0.1:8000`, so the two run on different
-ports without you needing to configure anything else.
+ports without you needing to configure anything else. Terminal 3 is
+optional for just browsing the dashboard — it's what keeps the data itself
+fresh; see Phase 6 for exactly what it does.
 
 By default the API reads `backend/data/applyops.db` and
 `backend/config/profile.json` — the same files the CLI uses — via
@@ -206,6 +216,62 @@ npm run typecheck   # tsc, no emit
 npm run build       # type-checks then builds a production bundle
 npm test            # vitest — pure logic/formatting helpers
 ```
+
+## Phase 6 — automatic refresh every 2 hours
+
+One pipeline, two ways to run it: manually, once, whenever you want —
+
+```bash
+cd backend
+python -m app.cli refresh --profile config/profile.json
+```
+
+— or continuously, on a schedule, as its own long-running process (Terminal
+3 above):
+
+```bash
+cd backend
+python -m app.scheduler
+```
+
+Both call the exact same `refresh_from_files` pipeline: collect every
+configured source → upsert jobs (preserving `first_seen_at` for jobs seen
+before) → run matching for the profile → record the run. Neither one
+duplicates the existing `scan`/`match` logic — `refresh` is a thin
+orchestration layer over them (see `backend/app/refresh.py`).
+
+**Cadence and timezone**: the scheduler refreshes immediately on startup,
+then again at the next even wall-clock 2-hour mark — 00:00, 02:00, 04:00,
+... 22:00 — **in your computer's local timezone**, not "2 hours after
+whenever you happened to start it." Start it at 9:47am and the next run is
+at 10:00am, not 11:47am.
+
+**Overlap protection**: the scheduler is a single sequential loop — it only
+computes the next boundary after a refresh has fully finished, so it can
+never overlap itself. A manual `cli.py refresh` run at the same time as a
+scheduled one is handled by an OS-level `flock` on `backend/data/.refresh.lock`
+(default path) that `refresh_from_files` holds for the exact duration of a
+run — not a lock-file-age heuristic. `flock` ties the lock to the process's
+open file descriptor, so the kernel releases it automatically the instant
+that descriptor closes, on *any* exit path, including a crash or `kill -9`.
+That means a refresh can legitimately run for however long it needs (there's
+no "older than N minutes, assume it's dead" window that a slow-but-healthy
+refresh could fall into), while a genuinely crashed process still can never
+leave the database permanently locked. The second caller gets a clear
+"already running" error instead of two collectors hitting the same SQLite
+file at once.
+
+> **The local scheduler only runs while this computer/process is running.**
+> If the Mac sleeps, loses power, or the process is killed, refreshes stop
+> until you start it again. There is no missed-run catch-up and no always-on
+> cloud component in this phase — that's a deliberately separate, later
+> problem.
+
+The dashboard's Today page shows a compact "Last refreshed: N minutes ago"
+line (with new/high-priority/review counts from that run) so you can tell
+at a glance whether the scheduler is actually running — it polls the API
+every 60 seconds to stay current, but the browser itself never triggers a
+refresh; it only ever reads what the backend/scheduler already produced.
 
 ## Architecture
 

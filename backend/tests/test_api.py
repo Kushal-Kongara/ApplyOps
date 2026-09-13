@@ -71,6 +71,33 @@ class DashboardTest(ApiTestCase):
             self.assertIn(field, card)
         self.assertEqual(card["matched_skills"], ["React", "Python"])
 
+    def test_last_refresh_is_null_when_no_refresh_has_ever_run(self):
+        data = self.client.get("/api/dashboard").json()
+        self.assertIsNone(data["last_refresh"])
+
+    def test_last_refresh_reflects_the_most_recent_recorded_run(self):
+        from app import refresh as refresh_module
+
+        result = refresh_module.RefreshResult(
+            profile_id="test",
+            started_at=NOW,
+            finished_at=NOW,
+            status="success",
+            sources=[],
+            jobs_fetched=10,
+            jobs_new=4,
+            jobs_updated=6,
+            high_priority_new=2,
+            review_new=1,
+        )
+        refresh_module.record_refresh_run(self.connection, result)
+
+        data = self.client.get("/api/dashboard").json()
+        self.assertEqual(data["last_refresh"]["status"], "success")
+        self.assertEqual(data["last_refresh"]["jobs_new"], 4)
+        self.assertEqual(data["last_refresh"]["high_priority_new"], 2)
+        self.assertEqual(data["last_refresh"]["review_new"], 1)
+
 
 class JobsEndpointTest(ApiTestCase):
     def setUp(self):

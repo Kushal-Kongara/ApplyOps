@@ -1,9 +1,13 @@
 import { AsyncSection } from '../components/AsyncSection'
 import { JobCardView } from '../components/JobCardView'
+import { RefreshBanner } from '../components/RefreshBanner'
 import { StatCard } from '../components/StatCard'
 import { getDashboard } from '../api'
 import { useAsync } from '../hooks/useAsync'
+import { useInterval } from '../hooks/useInterval'
 import type { JobCard } from '../types'
+
+const POLL_INTERVAL_MS = 60_000
 
 function JobGrid({ jobs, onChanged, emptyMessage }: { jobs: JobCard[]; onChanged: () => void; emptyMessage: string }) {
   if (jobs.length === 0) {
@@ -21,6 +25,11 @@ function JobGrid({ jobs, onChanged, emptyMessage }: { jobs: JobCard[]; onChanged
 export function TodayPage() {
   const { data, loading, error, reload } = useAsync(getDashboard)
 
+  // The backend's scheduler refreshes data every 2 hours on its own; this
+  // just periodically re-reads whatever it already has, so a session left
+  // open notices a completed refresh without a manual reload.
+  useInterval(reload, POLL_INTERVAL_MS)
+
   return (
     <div className="page">
       <h1 className="page__title">Today</h1>
@@ -28,6 +37,8 @@ export function TodayPage() {
       <AsyncSection loading={loading} error={error}>
         {data && (
           <>
+            <RefreshBanner refresh={data.last_refresh} />
+
             <div className="stat-row">
               <StatCard label="High Priority" value={data.summary.high_priority} tone="accent" />
               <StatCard label="Review" value={data.summary.review} />

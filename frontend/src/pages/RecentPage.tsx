@@ -4,9 +4,11 @@ import { JobCardView } from '../components/JobCardView'
 import { StatCard } from '../components/StatCard'
 import { getRecentJobs } from '../api'
 import { useAsync } from '../hooks/useAsync'
+import { useInterval } from '../hooks/useInterval'
 import type { RecentBucket, RecentJobCard } from '../types'
 
 const HIGH_PRIORITY_MIN_SCORE = 70 // display grouping only — same threshold the rest of the app already uses
+const POLL_INTERVAL_MS = 60_000
 
 function splitByPriority(jobs: RecentJobCard[]) {
   // `jobs` arrives already sorted (score desc, then freshness) by the
@@ -63,6 +65,11 @@ export function RecentPage() {
     () => getRecentJobs({ older_limit: olderLimit }),
     [olderLimit],
   )
+
+  // Backend refreshes every 2 hours on its own schedule; this just
+  // periodically re-reads it so newly discovered jobs show up here
+  // without a manual page reload.
+  useInterval(reload, POLL_INTERVAL_MS)
 
   return (
     <div className="page">

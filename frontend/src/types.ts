@@ -56,11 +56,23 @@ export interface DashboardSummary {
   applications_total: number
 }
 
+export interface RefreshSummary {
+  started_at: string
+  finished_at: string
+  status: 'success' | 'partial' | 'failed'
+  jobs_new: number
+  jobs_updated: number
+  high_priority_new: number
+  review_new: number
+  error_message: string | null
+}
+
 export interface DashboardResponse {
   summary: DashboardSummary
   high_priority: JobCard[]
   review_candidates: JobCard[]
   follow_ups: JobCard[]
+  last_refresh: RefreshSummary | null
 }
 
 export interface FollowUpsResponse {

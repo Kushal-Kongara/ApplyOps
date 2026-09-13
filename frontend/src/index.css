@@ -217,6 +217,48 @@ a {
   gap: 4px;
 }
 
+/* ---------- refresh banner ---------- */
+
+.refresh-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin-bottom: 18px;
+  font-size: 12.5px;
+}
+
+.refresh-banner--muted {
+  color: var(--text-muted);
+}
+
+.refresh-banner--warn {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+}
+
+.refresh-banner__line {
+  font-weight: 600;
+}
+
+.refresh-banner__status {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.refresh-banner__stats {
+  color: var(--text-muted);
+}
+
+.refresh-banner__error {
+  flex-basis: 100%;
+  color: var(--danger);
+}
+
 /* ---------- stat cards ---------- */
 
 .stat-row {

@@ -101,6 +101,31 @@ CREATE TABLE IF NOT EXISTS applications (
 
 CREATE INDEX IF NOT EXISTS idx_applications_status ON applications (status);
 CREATE INDEX IF NOT EXISTS idx_applications_next_follow_up_at ON applications (next_follow_up_at);
+
+-- One row per full refresh cycle (collect every source + run matching).
+-- Deliberately small: counts only, never a serialized job payload — that's
+-- what `jobs`/`job_matches`/`scan_runs` already are for.
+CREATE TABLE IF NOT EXISTS refresh_runs (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id         TEXT    NOT NULL,
+    started_at         TEXT    NOT NULL,
+    finished_at        TEXT,
+    status             TEXT    NOT NULL CHECK (status IN ('success', 'partial', 'failed')),
+    sources_attempted  INTEGER NOT NULL DEFAULT 0,
+    sources_succeeded  INTEGER NOT NULL DEFAULT 0,
+    sources_failed     INTEGER NOT NULL DEFAULT 0,
+    jobs_fetched       INTEGER NOT NULL DEFAULT 0,
+    jobs_new           INTEGER NOT NULL DEFAULT 0,
+    jobs_updated       INTEGER NOT NULL DEFAULT 0,
+    jobs_deactivated   INTEGER NOT NULL DEFAULT 0,
+    jobs_scored        INTEGER NOT NULL DEFAULT 0,
+    jobs_filtered      INTEGER NOT NULL DEFAULT 0,
+    high_priority_new  INTEGER NOT NULL DEFAULT 0,
+    review_new         INTEGER NOT NULL DEFAULT 0,
+    error_message      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_runs_started_at ON refresh_runs (started_at DESC);
 """
 
 _JOB_COLUMNS = (
@@ -392,6 +417,113 @@ def list_scan_runs(connection: sqlite3.Connection, limit: int = 20) -> list[sqli
     """Return the most recent scan runs, newest first."""
     return connection.execute(
         "SELECT * FROM scan_runs ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def list_job_unique_keys(connection: sqlite3.Connection) -> set[str]:
+    """Every job's unique key, active or not.
+
+    Used to tell a genuinely new job apart from one seen again: a caller
+    snapshots this before a refresh's collection step and again after —
+    the difference is exactly the jobs that were inserted, without
+    changing what `apply_scan_results`/`_upsert_jobs` already track.
+    """
+    rows = connection.execute("SELECT unique_key FROM jobs").fetchall()
+    return {row["unique_key"] for row in rows}
+
+
+def start_refresh_run(
+    connection: sqlite3.Connection, profile_id: str, started_at: datetime | None = None
+) -> int:
+    """Record the beginning of one refresh cycle and return its run id."""
+    cursor = connection.execute(
+        """
+        INSERT INTO refresh_runs (profile_id, started_at, status)
+        VALUES (?, ?, 'partial')
+        """,
+        (profile_id, _to_iso(started_at or utcnow())),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def finish_refresh_run(
+    connection: sqlite3.Connection,
+    run_id: int,
+    status: str,
+    sources_attempted: int = 0,
+    sources_succeeded: int = 0,
+    sources_failed: int = 0,
+    jobs_fetched: int = 0,
+    jobs_new: int = 0,
+    jobs_updated: int = 0,
+    jobs_deactivated: int = 0,
+    jobs_scored: int = 0,
+    jobs_filtered: int = 0,
+    high_priority_new: int = 0,
+    review_new: int = 0,
+    error_message: str | None = None,
+    finished_at: datetime | None = None,
+) -> None:
+    """Record the outcome of one refresh cycle."""
+    connection.execute(
+        """
+        UPDATE refresh_runs
+           SET finished_at = ?,
+               status = ?,
+               sources_attempted = ?,
+               sources_succeeded = ?,
+               sources_failed = ?,
+               jobs_fetched = ?,
+               jobs_new = ?,
+               jobs_updated = ?,
+               jobs_deactivated = ?,
+               jobs_scored = ?,
+               jobs_filtered = ?,
+               high_priority_new = ?,
+               review_new = ?,
+               error_message = ?
+         WHERE id = ?
+        """,
+        (
+            _to_iso(finished_at or utcnow()),
+            status,
+            sources_attempted,
+            sources_succeeded,
+            sources_failed,
+            jobs_fetched,
+            jobs_new,
+            jobs_updated,
+            jobs_deactivated,
+            jobs_scored,
+            jobs_filtered,
+            high_priority_new,
+            review_new,
+            error_message,
+            run_id,
+        ),
+    )
+    connection.commit()
+
+
+def get_latest_refresh_run(connection: sqlite3.Connection, profile_id: str) -> sqlite3.Row | None:
+    """The most recently *finished* refresh run for one profile, if any."""
+    return connection.execute(
+        """
+        SELECT * FROM refresh_runs
+         WHERE profile_id = ? AND finished_at IS NOT NULL
+         ORDER BY id DESC
+         LIMIT 1
+        """,
+        (profile_id,),
+    ).fetchone()
+
+
+def list_refresh_runs(connection: sqlite3.Connection, profile_id: str, limit: int = 20) -> list[sqlite3.Row]:
+    """Return the most recent refresh runs for one profile, newest first."""
+    return connection.execute(
+        "SELECT * FROM refresh_runs WHERE profile_id = ? ORDER BY id DESC LIMIT ?",
+        (profile_id, limit),
     ).fetchall()
 
 

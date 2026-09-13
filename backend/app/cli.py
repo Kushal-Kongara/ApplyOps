@@ -9,6 +9,7 @@
     python -m app.cli applications --status shortlisted
     python -m app.cli application-update <job-unique-key> --status shortlisted
     python -m app.cli daily --profile config/profile.json
+    python -m app.cli refresh --profile config/profile.json
 """
 
 import argparse
@@ -41,6 +42,7 @@ from app.matching.skills import MAX_SKILL_SCORE
 from app.matching.titles import MAX_TITLE_SCORE
 from app.models import utcnow
 from app.profile import Profile, ProfileError, load_profile
+from app import refresh
 
 
 @dataclass(slots=True)
@@ -577,6 +579,65 @@ def _format_daily_item(item) -> str:
     return "\n".join(lines)
 
 
+def _cmd_refresh(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    try:
+        result = refresh.refresh_from_files(
+            db_path=args.db, sources_path=args.config, profile_path=args.profile, lock_path=args.lock_path
+        )
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    except ProfileError as exc:
+        print(f"Profile error: {exc}", file=sys.stderr)
+        return 2
+    except refresh.RefreshAlreadyRunningError as exc:
+        print(f"Refresh error: {exc}", file=sys.stderr)
+        return 2
+
+    print(_format_refresh_result(result), file=out)
+    return 1 if result.status != "success" else 0
+
+
+def _format_refresh_result(result: "refresh.RefreshResult") -> str:
+    # Quoted forward reference: `app.refresh` imports `app.cli` (to reuse
+    # scan_sources/match_jobs), so whichever module is imported *first*
+    # would otherwise see the other only partially initialized here.
+    lines = [
+        "JobOS refresh",
+        "",
+        f"Sources: {result.sources_succeeded}/{result.sources_attempted} succeeded",
+    ]
+    for source in result.sources:
+        if source.failed:
+            lines.append(f"  {source.company} / {source.source}: failed — {source.error}")
+
+    lines += [
+        f"Fetched: {result.jobs_fetched:,}",
+        f"New: {result.jobs_new:,}",
+        f"Updated: {result.jobs_updated:,}",
+    ]
+    if result.jobs_deactivated:
+        lines.append(f"Deactivated: {result.jobs_deactivated:,}")
+
+    lines += [
+        "",
+        "Matching:",
+        f"Scored: {result.jobs_scored:,}",
+        f"Filtered: {result.jobs_filtered:,}",
+        "",
+        "New strong matches:",
+        f"{HIGH_PRIORITY_MIN_SCORE}+: {result.high_priority_new}",
+        f"{REVIEW_MIN_SCORE}-{HIGH_PRIORITY_MIN_SCORE - 1}: {result.review_new}",
+        "",
+        f"Completed in {result.duration_seconds:.1f}s",
+    ]
+    if result.status != "success":
+        lines.append(f"Status: {result.status}")
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli", description="ApplyOps job collection and match scoring."
@@ -673,6 +734,18 @@ def build_parser() -> argparse.ArgumentParser:
     daily_parser.add_argument("--profile", default="config/profile.json", type=Path)
     daily_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
     daily_parser.set_defaults(handler=_cmd_daily)
+
+    refresh_parser = subparsers.add_parser(
+        "refresh", help="Collect every configured source and run matching, in one call."
+    )
+    refresh_parser.add_argument("--config", default="config/sources.json", type=Path)
+    refresh_parser.add_argument("--profile", default="config/profile.json", type=Path)
+    refresh_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    refresh_parser.add_argument(
+        "--lock-path", default=refresh.DEFAULT_LOCK_PATH, type=Path,
+        help=f"Advisory lock file path (default: {refresh.DEFAULT_LOCK_PATH}).",
+    )
+    refresh_parser.set_defaults(handler=_cmd_refresh)
 
     return parser
 
