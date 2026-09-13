@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { updateApplication } from '../api'
 import { formatDate, relativeTime, statusLabel, toDateInputValue, visaLabel } from '../format'
+import { useOpenJob } from '../navigation'
 import type { ApplicationStatus, JobCard } from '../types'
 import { APPLICATION_STATUSES } from '../types'
 
@@ -30,6 +31,7 @@ function ScoreRow({ label, value, max }: { label: string; value: number | null; 
 }
 
 export function JobCardView({ job, onChanged, showFollowUpEditor, discoveredAt }: Props) {
+  const openJob = useOpenJob()
   const [busy, setBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [followUpDraft, setFollowUpDraft] = useState(() => toDateInputValue(job.next_follow_up_at))
@@ -143,6 +145,11 @@ export function JobCardView({ job, onChanged, showFollowUpEditor, discoveredAt }
           >
             View Job
           </a>
+          {openJob && (
+            <button type="button" className="btn btn--secondary" onClick={() => openJob(job.job_unique_key)}>
+              Open in JobOS
+            </button>
+          )}
           <button
             type="button"
             className="btn btn--primary"

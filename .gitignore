@@ -20,6 +20,10 @@ backend/data/
 # Private source configuration (keep the example committed)
 backend/config/sources.json
 backend/config/profile.json
+backend/config/resume_master.json
+
+# Generated resume artifacts (LaTeX/PDF output, never committed)
+backend/data/resumes/
 
 # Frontend
 node_modules/

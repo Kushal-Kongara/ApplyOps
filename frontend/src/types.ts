@@ -135,3 +135,42 @@ export interface JobsQuery {
   min_score?: number
   status?: ApplicationStatus
 }
+
+// --- Job Detail + resume tailoring ---------------------------------------
+
+export interface JobDetail extends JobCard {
+  description: string
+  unmatched_skills: string[]
+}
+
+export interface TailoringAnalysis {
+  strong_matches: string[]
+  supported_but_underemphasized: string[]
+  unsupported_requirements: string[]
+  selected_experience: string[]
+  selected_projects: string[]
+}
+
+export type ResumeCompilerStatus = 'not_attempted' | 'compiled' | 'unavailable' | 'failed'
+export type ResumeStatus = 'draft' | 'approved' | 'used'
+
+export interface ResumeVersionSummary {
+  id: number
+  job_unique_key: string
+  version: number
+  status: ResumeStatus
+  compiler_status: ResumeCompilerStatus
+  page_count: number | null
+  created_at: string
+  updated_at: string
+  approved_at: string | null
+}
+
+export interface ResumeVersionDetail extends ResumeVersionSummary {
+  compile_log: string | null
+  tailoring_analysis: TailoringAnalysis
+}
+
+export interface LatexSourceResponse {
+  latex_source: string
+}

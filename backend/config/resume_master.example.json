@@ -1,0 +1,80 @@
+{
+  "contact": {
+    "name": "Jordan Example",
+    "headline": "Full Stack Engineer",
+    "phone": "+1 (555) 010-0100",
+    "email": "jordan.example@example.com",
+    "linkedin": "Jordan Example",
+    "github": "jordan-example"
+  },
+  "summary": "Full Stack Engineer with 5+ years of experience building web applications end to end, from database schema through frontend UI, with a focus on reliability and shipping.",
+  "experience": [
+    {
+      "id": "exp_examplecorp",
+      "company": "Example Corp",
+      "location": "Remote",
+      "title": "Software Engineer",
+      "start_date": "Jan 2022",
+      "end_date": "Present",
+      "bullets": [
+        {
+          "id": "exp_examplecorp_b1",
+          "text": "Built and maintained customer-facing features using React and TypeScript, working closely with design and product."
+        },
+        {
+          "id": "exp_examplecorp_b2",
+          "text": "Developed backend REST APIs in Node.js and Express, backed by PostgreSQL."
+        },
+        {
+          "id": "exp_examplecorp_b3",
+          "text": "Wrote automated tests and participated in code review to keep the codebase reliable as the team grew."
+        }
+      ]
+    },
+    {
+      "id": "exp_priorco",
+      "company": "Prior Co",
+      "location": "San Francisco, CA",
+      "title": "Junior Software Engineer",
+      "start_date": "Jun 2019",
+      "end_date": "Dec 2021",
+      "bullets": [
+        {
+          "id": "exp_priorco_b1",
+          "text": "Implemented internal dashboards using React and REST APIs for the operations team."
+        },
+        {
+          "id": "exp_priorco_b2",
+          "text": "Fixed bugs and improved test coverage across an existing Python/Flask service."
+        }
+      ]
+    }
+  ],
+  "skills": {
+    "languages": ["TypeScript", "JavaScript", "Python", "SQL"],
+    "frontend": ["React", "HTML", "CSS"],
+    "backend": ["Node.js", "Express", "Flask", "REST APIs"],
+    "databases_orm": ["PostgreSQL", "SQL"],
+    "development": ["Git", "GitHub", "Code Reviews"]
+  },
+  "education": [
+    {
+      "id": "edu_example_university",
+      "school": "Example State University",
+      "location": "Example, CA",
+      "degree": "B.S. in Computer Science",
+      "start_date": "Aug 2015",
+      "end_date": "May 2019"
+    }
+  ],
+  "achievements": [
+    {
+      "id": "ach_1",
+      "text": "Placed 2nd at an internal company hackathon."
+    }
+  ],
+  "source": {
+    "type": "manual",
+    "filename": "resume_master.example.json"
+  }
+}

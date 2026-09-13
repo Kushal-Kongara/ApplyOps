@@ -126,6 +126,33 @@ CREATE TABLE IF NOT EXISTS refresh_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_refresh_runs_started_at ON refresh_runs (started_at DESC);
+
+-- One row per generated resume version. `latex_source` is the source of
+-- truth served by the API (never a filesystem path) — the on-disk copy
+-- under `data/resumes/` exists only so a local LaTeX compiler has a file to
+-- read. Regeneration always inserts a new `version`; a row is never
+-- overwritten or deleted, so every prior version stays available.
+CREATE TABLE IF NOT EXISTS resume_versions (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_unique_key     TEXT    NOT NULL,
+    version            INTEGER NOT NULL,
+    status             TEXT    NOT NULL DEFAULT 'draft'
+                       CHECK (status IN ('draft', 'approved', 'used')),
+    latex_source       TEXT    NOT NULL,
+    pdf_path           TEXT,
+    compiler_status    TEXT    NOT NULL DEFAULT 'not_attempted'
+                       CHECK (compiler_status IN ('not_attempted', 'compiled', 'unavailable', 'failed')),
+    compile_log        TEXT,
+    page_count         INTEGER,
+    tailoring_analysis TEXT    NOT NULL DEFAULT '{}',
+    created_at         TEXT    NOT NULL,
+    updated_at         TEXT    NOT NULL,
+    approved_at        TEXT,
+    UNIQUE (job_unique_key, version),
+    FOREIGN KEY (job_unique_key) REFERENCES jobs (unique_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions (job_unique_key, version DESC);
 """
 
 _JOB_COLUMNS = (
@@ -992,3 +1019,115 @@ def _from_iso(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value)
+
+
+# --- resume_versions ----------------------------------------------------
+#
+# One row per generated resume version for one job. Regeneration always
+# inserts a new version — nothing here ever updates `latex_source` or
+# `pdf_path` on an existing row. Approval is the only mutation: it flips
+# `status`/`approved_at` on one row and demotes any other approved row for
+# the same job back to `draft`, so at most one version per job is ever
+# `approved` at a time.
+
+_RESUME_VERSION_COLUMNS = (
+    "job_unique_key, version, status, latex_source, pdf_path, compiler_status, "
+    "compile_log, page_count, tailoring_analysis, created_at, updated_at, approved_at"
+)
+
+
+def next_resume_version(connection: sqlite3.Connection, job_unique_key: str) -> int:
+    """The version number the next generation for this job should use."""
+    row = connection.execute(
+        "SELECT MAX(version) AS max_version FROM resume_versions WHERE job_unique_key = ?",
+        (job_unique_key,),
+    ).fetchone()
+    current = row["max_version"]
+    return int(current) + 1 if current is not None else 1
+
+
+def insert_resume_version(
+    connection: sqlite3.Connection,
+    *,
+    job_unique_key: str,
+    version: int,
+    latex_source: str,
+    pdf_path: str | None,
+    compiler_status: str,
+    compile_log: str | None,
+    page_count: int | None,
+    tailoring_analysis: dict,
+    now: datetime | None = None,
+) -> int:
+    """Insert one new resume version. Always an insert — never updates an
+    existing row, so regeneration can never clobber a prior version."""
+    now = now or utcnow()
+    cursor = connection.execute(
+        f"INSERT INTO resume_versions ({_RESUME_VERSION_COLUMNS}) "
+        "VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        (
+            job_unique_key,
+            version,
+            latex_source,
+            pdf_path,
+            compiler_status,
+            compile_log,
+            page_count,
+            json.dumps(tailoring_analysis),
+            _to_iso(now),
+            _to_iso(now),
+        ),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def get_resume_version(connection: sqlite3.Connection, resume_id: int) -> sqlite3.Row | None:
+    """One resume version by its own id."""
+    return connection.execute(
+        "SELECT * FROM resume_versions WHERE id = ?", (resume_id,)
+    ).fetchone()
+
+
+def list_resume_versions(connection: sqlite3.Connection, job_unique_key: str) -> list[sqlite3.Row]:
+    """Every version generated for one job, newest first. Never filtered —
+    old versions stay visible/available, they're just not the approved one."""
+    return connection.execute(
+        "SELECT * FROM resume_versions WHERE job_unique_key = ? ORDER BY version DESC",
+        (job_unique_key,),
+    ).fetchall()
+
+
+def approve_resume_version(
+    connection: sqlite3.Connection, resume_id: int, now: datetime | None = None
+) -> sqlite3.Row | None:
+    """Mark one resume version approved, demoting any other approved
+    version of the same job back to `draft`. Returns the updated row, or
+    `None` if `resume_id` doesn't exist.
+
+    Approval means only "this is the version I'd use for this job" — it
+    never touches `applications.status` or anything else outside this table.
+    """
+    now = now or utcnow()
+    row = get_resume_version(connection, resume_id)
+    if row is None:
+        return None
+
+    connection.execute(
+        """
+        UPDATE resume_versions
+           SET status = 'draft', updated_at = ?
+         WHERE job_unique_key = ? AND status = 'approved' AND id != ?
+        """,
+        (_to_iso(now), row["job_unique_key"], resume_id),
+    )
+    connection.execute(
+        """
+        UPDATE resume_versions
+           SET status = 'approved', approved_at = ?, updated_at = ?
+         WHERE id = ?
+        """,
+        (_to_iso(now), _to_iso(now), resume_id),
+    )
+    connection.commit()
+    return get_resume_version(connection, resume_id)

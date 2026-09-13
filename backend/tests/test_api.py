@@ -137,6 +137,15 @@ class JobsEndpointTest(ApiTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["title"], "Full Stack Engineer")
 
+    def test_job_detail_includes_full_description_and_unmatched_skills(self):
+        # Job Detail needs the *full* stored JD (never re-scraped from the
+        # ATS) and the unmatched side of the skills breakdown -- neither is
+        # on the shared JobCard shape every list view uses.
+        response = self.client.get("/api/jobs/greenhouse:acme:1")
+        data = response.json()
+        self.assertEqual(data["description"], "Build our product end to end.")
+        self.assertEqual(data["unmatched_skills"], ["AWS"])
+
     def test_get_unknown_job_returns_404(self):
         response = self.client.get("/api/jobs/does-not-exist")
         self.assertEqual(response.status_code, 404)

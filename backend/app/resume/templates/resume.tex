@@ -1,0 +1,54 @@
+\documentclass[10.5pt]{article}
+
+% Deliberately minimal package set (all standard/widely-available) --
+% ATS parsers and Overleaf's default compiler both need nothing exotic here.
+% No graphics, no icons, no multi-column layout, no color -- just selectable
+% text in a standard reading order.
+\usepackage[margin=0.65in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{enumitem}
+\usepackage{parskip}
+
+\pagestyle{empty}
+\setlist[itemize]{leftmargin=1.1em, itemsep=1pt, topsep=2pt, parsep=0pt}
+
+% \resumeEntry{title}{company}{dates}{location}
+\newcommand{\resumeEntry}[4]{%
+  \noindent\textbf{#1} \hfill \textbf{#3}\\%
+  \noindent\textit{#2} \hfill \textit{#4}%
+}
+
+% \resumeProject{name}{technologies}
+\newcommand{\resumeProject}[2]{%
+  \noindent\textbf{#1} \hfill \textit{#2}%
+}
+
+\newcommand{\resumeSection}[1]{%
+  \vspace{4pt}%
+  \noindent{\large\textbf{#1}}\par%
+  \noindent\rule{\linewidth}{0.5pt}\\[2pt]%
+}
+
+\begin{document}
+
+\begin{center}
+  {\LARGE \textbf{<<NAME>>}}\\[2pt]
+  <<HEADLINE>>\\[2pt]
+  <<CONTACT_LINE>>
+\end{center}
+
+\resumeSection{Summary}
+<<SUMMARY>>
+
+\resumeSection{Skills}
+<<SKILLS>>
+
+\resumeSection{Experience}
+<<EXPERIENCE>>
+
+\resumeSection{Education}
+<<EDUCATION>>
+
+<<OPTIONAL_SECTIONS>>
+
+\end{document}

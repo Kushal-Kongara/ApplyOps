@@ -146,6 +146,66 @@ LEVER_PAYLOAD = [
 ]
 
 
+def make_master_resume_dict(**overrides: Any) -> dict[str, Any]:
+    """A minimal, valid `resume_master.json` payload for resume tests.
+    Fictional data only — never anything from a real candidate's resume."""
+    fields: dict[str, Any] = {
+        "contact": {
+            "name": "Test Candidate",
+            "headline": "Full Stack Engineer",
+            "email": "test@example.com",
+            "phone": "+1 (555) 000-0000",
+            "linkedin": "Test Candidate",
+            "github": "test-candidate",
+        },
+        "summary": "Full stack engineer with experience across React, TypeScript, and Python.",
+        "experience": [
+            {
+                "id": "exp_acme",
+                "company": "Acme Corp",
+                "location": "Remote",
+                "title": "Software Engineer",
+                "start_date": "Jan 2022",
+                "end_date": "Present",
+                "bullets": [
+                    {"id": "exp_acme_b1", "text": "Built customer-facing features using React and TypeScript."},
+                    {"id": "exp_acme_b2", "text": "Developed REST APIs in Python and PostgreSQL."},
+                ],
+            },
+            {
+                "id": "exp_beta",
+                "company": "Beta Inc",
+                "location": "San Francisco, CA",
+                "title": "Junior Engineer",
+                "start_date": "Jun 2020",
+                "end_date": "Dec 2021",
+                "bullets": [
+                    {"id": "exp_beta_b1", "text": "Maintained internal dashboards with SQL-backed reporting."},
+                ],
+            },
+        ],
+        "skills": {
+            "languages": ["TypeScript", "Python", "SQL"],
+            "frontend": ["React"],
+            "backend": ["Node.js"],
+        },
+        "education": [
+            {
+                "id": "edu_test",
+                "school": "Test University",
+                "location": "Testville, CA",
+                "degree": "B.S. in Computer Science",
+                "start_date": "Aug 2016",
+                "end_date": "May 2020",
+            }
+        ],
+        "achievements": [{"id": "ach_1", "text": "Won a test hackathon."}],
+        "source": {"type": "manual", "filename": "test_fixture.json"},
+    }
+    fields.update(overrides)
+    return fields
+
+
 def make_match_kwargs(**overrides: Any) -> dict[str, Any]:
     """Keyword args for `database.upsert_match`, with reasonable defaults."""
     fields: dict[str, Any] = dict(

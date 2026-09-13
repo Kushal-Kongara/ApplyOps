@@ -12,6 +12,7 @@ Run it with:
     uvicorn app.api:app --reload --port 8000
 """
 
+import json
 import os
 import sqlite3
 from dataclasses import asdict
@@ -21,17 +22,23 @@ from typing import Iterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from app import applications, database, recent
 from app.applications import ApplicationError, parse_datetime_arg, validate_status
 from app.profile import Profile, ProfileError, load_profile
+from app.resume import service as resume_service
+from app.resume.master import DEFAULT_MASTER_RESUME_PATH, MasterResumeError
+from app.resume.storage import DEFAULT_RESUMES_ROOT
 
 # Same configuration story as the CLI (`--db`/`--profile` flags), just
 # expressed as env vars since a long-running server isn't invoked per
 # command. Defaults match the CLI's own defaults exactly.
 DB_PATH = Path(os.environ.get("APPLYOPS_DB_PATH", str(database.DEFAULT_DB_PATH)))
 PROFILE_PATH = Path(os.environ.get("APPLYOPS_PROFILE_PATH", "config/profile.json"))
+MASTER_RESUME_PATH = Path(os.environ.get("APPLYOPS_MASTER_RESUME_PATH", str(DEFAULT_MASTER_RESUME_PATH)))
+RESUMES_ROOT = Path(os.environ.get("APPLYOPS_RESUMES_ROOT", str(DEFAULT_RESUMES_ROOT)))
 
 # Vite's default dev server ports. This is a local, single-user tool with
 # no auth of its own — CORS is opened only to these known local origins,
@@ -42,7 +49,7 @@ app = FastAPI(title="ApplyOps API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=DEV_ORIGINS,
-    allow_methods=["GET", "PATCH"],
+    allow_methods=["GET", "PATCH", "POST"],
     allow_headers=["*"],
 )
 
@@ -177,6 +184,44 @@ class ApplicationRecord(BaseModel):
     updated_at: datetime
 
 
+class JobDetailResponse(JobCard):
+    """`JobCard` plus what only the Job Detail page needs — the full stored
+    job description (never re-scraped from the ATS) and the skills the
+    match found no evidence for."""
+
+    description: str
+    unmatched_skills: list[str]
+
+
+class TailoringAnalysisResponse(BaseModel):
+    strong_matches: list[str]
+    supported_but_underemphasized: list[str]
+    unsupported_requirements: list[str]
+    selected_experience: list[str]
+    selected_projects: list[str]
+
+
+class ResumeVersionSummary(BaseModel):
+    id: int
+    job_unique_key: str
+    version: int
+    status: str
+    compiler_status: str
+    page_count: int | None
+    created_at: datetime
+    updated_at: datetime
+    approved_at: datetime | None
+
+
+class ResumeVersionDetail(ResumeVersionSummary):
+    compile_log: str | None
+    tailoring_analysis: TailoringAnalysisResponse
+
+
+class LatexSourceResponse(BaseModel):
+    latex_source: str
+
+
 class ApplicationUpdateRequest(BaseModel):
     """A PATCH body only ever touches the fields it actually includes.
 
@@ -306,16 +351,28 @@ def get_recent_jobs(
     )
 
 
-@app.get("/api/jobs/{job_id}", response_model=JobCard)
+@app.get("/api/jobs/{job_id}", response_model=JobDetailResponse)
 def get_job(
     job_id: str,
     connection: sqlite3.Connection = Depends(get_connection),
     profile: Profile = Depends(get_profile),
-) -> JobCard:
-    item = applications.get_scored_job(connection, job_id, profile.profile_id)
-    if item is None:
+) -> JobDetailResponse:
+    """Full Job Detail: everything `JobCard` has, plus the full stored job
+    description and the unmatched-skills side of the breakdown. Sourced
+    from the same `job_matches` join `JobCard` uses — `database.get_match`
+    just also selects `description`/`unmatched_skills`, which
+    `job_card_from_row` doesn't carry onto the shared card shape.
+    """
+    row = database.get_match(connection, job_id, profile.profile_id)
+    if row is None:
         raise HTTPException(status_code=404, detail=f"No scored job found with key '{job_id}'.")
-    return JobCard.model_validate(item)
+    item = applications.job_card_from_row(row, "new")
+    unmatched_skills_json = row["unmatched_skills"]
+    return JobDetailResponse(
+        **asdict(item),
+        description=row["description"],
+        unmatched_skills=json.loads(unmatched_skills_json) if unmatched_skills_json else [],
+    )
 
 
 @app.get("/api/applications", response_model=list[ApplicationRecord])
@@ -398,5 +455,144 @@ def get_follow_ups(
         due=[JobCard.model_validate(item) for item in page.due],
         upcoming=[JobCard.model_validate(item) for item in page.upcoming],
     )
+
+
+# --- resumes -----------------------------------------------------------
+#
+# On-demand, evidence-bound tailored resume generation. Every write here
+# goes through `app.resume.service`/`app.database` — this module only turns
+# rows into JSON and maps error states onto HTTP status codes. Generation is
+# always user-triggered by a `POST`; nothing in this file (or anywhere else
+# in the app) calls it automatically.
+
+
+def _require_job(connection: sqlite3.Connection, job_id: str) -> sqlite3.Row:
+    job_row = database.get_job(connection, job_id)
+    if job_row is None:
+        raise HTTPException(status_code=404, detail={"error": "job_not_found", "message": f"No job found with key '{job_id}'."})
+    return job_row
+
+
+def _require_resume(connection: sqlite3.Connection, resume_id: int) -> sqlite3.Row:
+    row = database.get_resume_version(connection, resume_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "resume_not_found", "message": f"No resume version found with id {resume_id}."})
+    return row
+
+
+def _resume_version_summary(row: sqlite3.Row) -> ResumeVersionSummary:
+    return ResumeVersionSummary(
+        id=row["id"],
+        job_unique_key=row["job_unique_key"],
+        version=row["version"],
+        status=row["status"],
+        compiler_status=row["compiler_status"],
+        page_count=row["page_count"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        approved_at=row["approved_at"],
+    )
+
+
+def _resume_version_detail(row: sqlite3.Row) -> ResumeVersionDetail:
+    analysis = json.loads(row["tailoring_analysis"])
+    return ResumeVersionDetail(
+        **_resume_version_summary(row).model_dump(),
+        compile_log=row["compile_log"],
+        tailoring_analysis=TailoringAnalysisResponse(**analysis),
+    )
+
+
+@app.post("/api/jobs/{job_id}/resumes", response_model=ResumeVersionDetail, status_code=201)
+def generate_resume(
+    job_id: str,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ResumeVersionDetail:
+    """Generate a brand-new tailored resume version for this job.
+
+    Always creates a new version (v1 the first time, v2/v3/... on every
+    later call for the same job) — regeneration never overwrites or
+    returns a previously generated version.
+    """
+    job_row = _require_job(connection, job_id)
+    try:
+        row = resume_service.generate_resume_version(
+            connection, job_row, master_resume_path=MASTER_RESUME_PATH, resumes_root=RESUMES_ROOT
+        )
+    except MasterResumeError as exc:
+        raise HTTPException(status_code=409, detail={"error": "master_resume_missing", "message": str(exc)}) from exc
+    return _resume_version_detail(row)
+
+
+@app.get("/api/jobs/{job_id}/resumes", response_model=list[ResumeVersionSummary])
+def list_job_resumes(
+    job_id: str,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> list[ResumeVersionSummary]:
+    """Every version generated for this job, newest first. Never filters out
+    old versions — regeneration adds a version, it never removes one."""
+    _require_job(connection, job_id)
+    rows = database.list_resume_versions(connection, job_id)
+    return [_resume_version_summary(row) for row in rows]
+
+
+@app.get("/api/resumes/{resume_id}", response_model=ResumeVersionDetail)
+def get_resume(
+    resume_id: int,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ResumeVersionDetail:
+    row = _require_resume(connection, resume_id)
+    return _resume_version_detail(row)
+
+
+@app.get("/api/resumes/{resume_id}/latex", response_model=LatexSourceResponse)
+def get_resume_latex(
+    resume_id: int,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> LatexSourceResponse:
+    """The full `.tex` source, straight from the database — never read off
+    disk, so nothing about the local filesystem layout is exposed."""
+    row = _require_resume(connection, resume_id)
+    return LatexSourceResponse(latex_source=row["latex_source"])
+
+
+@app.get("/api/resumes/{resume_id}/pdf")
+def get_resume_pdf(
+    resume_id: int,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> Response:
+    """The compiled PDF, streamed as bytes -- the on-disk path is never
+    part of the response. 409s with a clear, machine-readable error state
+    if this version was never compiled (no local compiler was available)
+    or if compilation failed.
+    """
+    row = _require_resume(connection, resume_id)
+    if row["compiler_status"] == "unavailable":
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "latex_compiler_unavailable", "message": "No local LaTeX compiler was available when this version was generated."},
+        )
+    if row["compiler_status"] in ("failed", "not_attempted"):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "latex_compile_failed", "message": row["compile_log"] or "LaTeX compilation did not produce a PDF."},
+        )
+    pdf_bytes = Path(row["pdf_path"]).read_bytes()
+    return Response(content=pdf_bytes, media_type="application/pdf")
+
+
+@app.post("/api/resumes/{resume_id}/approve", response_model=ResumeVersionDetail)
+def approve_resume(
+    resume_id: int,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ResumeVersionDetail:
+    """Mark this version approved -- meaning only "this is the resume I'd
+    use for this job." Demotes any other approved version of the same job
+    back to draft. Never touches application status, never sends anything,
+    never submits anything.
+    """
+    _require_resume(connection, resume_id)
+    row = database.approve_resume_version(connection, resume_id)
+    return _resume_version_detail(row)
 
 

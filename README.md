@@ -44,9 +44,14 @@ jobs visually instead of only from the CLI.
 
 Phase 6 (automatic refresh) is implemented: one `refresh` pipeline (collect
 every source, then match) that's callable manually or on a schedule, plus a
-local scheduler that runs it immediately and then every 2 hours. Everything
-else below (DGX inference, recruiter discovery, resume tailoring, auto-apply,
-notifications) is planned, not built.
+local scheduler that runs it immediately and then every 2 hours.
+
+Phase 7 (Job Detail + on-demand tailored resume generation) is implemented: a
+Job Detail page with the full stored job description, a deterministic
+(no-LLM) resume tailoring engine that selects/reorders your own master-resume
+content per job, a LaTeX renderer, optional local PDF compilation, and a
+version history with an approval state. Everything else below (recruiter
+discovery, auto-apply, notifications) is planned, not built.
 
 ## Phase 1 setup
 
@@ -202,9 +207,9 @@ it elsewhere (uncomment/edit them in `.env.example`).
 
 The API only allows browser requests from `http://localhost:5173` and
 `http://127.0.0.1:5173` — Vite's default dev server ports — and only for
-`GET`/`PATCH`, the only methods it exposes. This is a local, single-user
-tool with no login of its own, so CORS is opened just enough for the dev
-server to reach it directly if you ever bypass the proxy; it is not
+`GET`/`PATCH`/`POST`, the only methods it exposes. This is a local,
+single-user tool with no login of its own, so CORS is opened just enough for
+the dev server to reach it directly if you ever bypass the proxy; it is not
 configured for any other origin, and doing so for a real deployment would
 need a real auth story first.
 
@@ -273,6 +278,94 @@ at a glance whether the scheduler is actually running — it polls the API
 every 60 seconds to stay current, but the browser itself never triggers a
 refresh; it only ever reads what the backend/scheduler already produced.
 
+## Phase 7 — Job Detail + on-demand tailored resume generation
+
+### Master resume setup (required before generating anything)
+
+Resume tailoring reads from exactly one file: `backend/config/resume_master.json`.
+This must be your own real, truthful resume content — every fact a tailored
+resume can ever state comes from here.
+
+```bash
+cd backend
+cp config/resume_master.example.json config/resume_master.json
+```
+
+Edit `backend/config/resume_master.json` to match the schema in the example
+file: `contact`, `summary`, `experience` (each entry's `bullets` need a
+stable, unique `id` — e.g. `exp_acme_b1` — used later to trace every
+tailored bullet back to its source), `skills` (categorized lists), `education`,
+and optional `projects`/`achievements`. This file is git-ignored — only the
+fake-data example is committed. Until it exists, `POST
+/api/jobs/{job_id}/resumes` fails cleanly with a `master_resume_missing`
+error and a message pointing here; nothing is ever invented as a fallback.
+
+### The truthfulness rule
+
+Tailoring only ever **selects, reorders, or shortens** what's already in
+`resume_master.json`. It never invents a technology, employer, project,
+metric, or year of experience, and it never associates a skill with an
+employer/project unless a bullet in your master resume already does. If a
+job description asks for something your master resume has no evidence for,
+that requirement is reported (visible on the Changes tab) as unsupported —
+it is never added to the resume. See `backend/app/resume/tailor.py` for the
+exact algorithm (deterministic keyword matching — no LLM, no paid API).
+
+### Generating a resume
+
+From the dashboard: open a job (any job card's **Open in JobOS** button) to
+reach its Job Detail page, which shows the full stored job description (the
+original text collected during a scan, never re-fetched from the ATS) plus
+the full match-score breakdown. Under **Tailored Resume**, click **Generate
+Resume** — this is always an explicit, user-triggered action; nothing in
+this app generates a resume automatically (not on collection, not on a match
+score, not on a scheduler cycle).
+
+Each click of **Generate**/**Regenerate** creates a brand-new version
+(v1, v2, v3, ...) — a previous version is never overwritten or deleted, and
+regeneration with unchanged inputs can legitimately produce identical
+content (this is a deterministic engine, not a reason to add randomness).
+The **Versions** tab lists every version generated for a job. **Approve** on
+a version marks it as "the resume I'd use for this job" — it does not
+submit anything, change the application's status, or send anything anywhere.
+
+### LaTeX and PDF
+
+Every version's LaTeX source (`backend/app/resume/templates/resume.tex`,
+rendered by `backend/app/resume/latex.py`) is always generated and always
+available on the **LaTeX** tab — copy it or download the `.tex` file and
+paste it straight into [Overleaf](https://www.overleaf.com/) if you don't
+want to install anything locally.
+
+PDF compilation is optional and uses whatever's already on your machine, in
+this order: `latexmk`, `tectonic`, `pdflatex`. If none is installed, the
+version is still generated (LaTeX only) and the **Preview** tab explains
+that no local compiler was found — nothing is auto-installed. To enable PDF
+preview/download, install one, e.g.:
+
+```bash
+# macOS
+brew install --cask mactex-no-gui   # or: brew install tectonic
+
+# Debian/Ubuntu
+sudo apt install texlive-latex-base latexmk
+```
+
+Generated files live under `backend/data/resumes/<hashed-job-key>/v<N>/` —
+this whole directory is git-ignored. The API never returns a filesystem
+path; LaTeX source is served from the database, and the PDF is streamed as
+bytes.
+
+### Commands
+
+```bash
+cd backend
+python -m unittest discover -v -k resume   # resume-specific backend tests only
+```
+
+There is no CLI command for resume generation in this phase — it's a
+dashboard-only action (`POST /api/jobs/{job_id}/resumes` under the hood).
+
 ## Architecture
 
 - Python collectors, matching, and application tracking (standard-library
@@ -282,4 +375,6 @@ refresh; it only ever reads what the backend/scheduler already produced.
 - SQLite database (still local-first; a hosted database is a later concern,
   not a current limitation)
 - React and TypeScript dashboard (`frontend/`)
+- Deterministic, evidence-bound resume tailoring (`backend/app/resume/`) —
+  keyword matching only, no LLM/paid API in this phase (see Phase 7 above)
 - NVIDIA DGX with Ollama for local AI inference (later phase)
