@@ -140,3 +140,20 @@ class TailoringAnalysis:
     unsupported_requirements: list[str] = field(default_factory=list)
     selected_experience: list[str] = field(default_factory=list)
     selected_projects: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class RewriteAttempt:
+    """Full provenance for one attempted LLM rewrite of one bullet — kept
+    even when rejected, so nothing about an LLM-enhanced version is hidden
+    from the user. `rewritten_text` is `None` only when the provider itself
+    failed (unreachable/timeout/malformed output) before producing text to
+    validate."""
+
+    evidence_id: str
+    original_text: str
+    rewritten_text: str | None
+    validation_status: str  # "accepted" | "rejected" | "error"
+    validation_reasons: list[str]
+    provider: str
+    model: str

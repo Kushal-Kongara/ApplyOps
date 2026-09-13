@@ -8,13 +8,14 @@ deterministic, keyword-based) tailoring algorithm.
 """
 
 from app.resume.master import MasterResumeError, load_master_resume
-from app.resume.models import MasterResume, TailoredResume, TailoringAnalysis
+from app.resume.models import MasterResume, RewriteAttempt, TailoredResume, TailoringAnalysis
 from app.resume.tailor import tailor_resume
 
 __all__ = [
     "MasterResumeError",
     "load_master_resume",
     "MasterResume",
+    "RewriteAttempt",
     "TailoredResume",
     "TailoringAnalysis",
     "tailor_resume",

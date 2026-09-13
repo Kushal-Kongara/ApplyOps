@@ -145,6 +145,14 @@ CREATE TABLE IF NOT EXISTS resume_versions (
     compile_log        TEXT,
     page_count         INTEGER,
     tailoring_analysis TEXT    NOT NULL DEFAULT '{}',
+    generation_mode    TEXT    NOT NULL DEFAULT 'deterministic'
+                       CHECK (generation_mode IN ('deterministic', 'llm_enhanced')),
+    llm_provider       TEXT,
+    llm_model          TEXT,
+    rewrite_attempted  INTEGER NOT NULL DEFAULT 0,
+    rewrite_accepted   INTEGER NOT NULL DEFAULT 0,
+    rewrite_rejected   INTEGER NOT NULL DEFAULT 0,
+    rewrite_provenance TEXT    NOT NULL DEFAULT '[]',
     created_at         TEXT    NOT NULL,
     updated_at         TEXT    NOT NULL,
     approved_at        TEXT,
@@ -185,7 +193,33 @@ def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
 def create_schema(connection: sqlite3.Connection) -> None:
     """Create every table and index this phase needs. Safe to call repeatedly."""
     connection.executescript(SCHEMA)
+    _migrate_resume_versions_columns(connection)
     connection.commit()
+
+
+# SQLite's `CREATE TABLE IF NOT EXISTS` above is a no-op against a database
+# that already has a `resume_versions` table from before this phase's new
+# columns existed (e.g. this project's own real local database, which
+# already had rows from the deterministic-only phase). `ALTER TABLE ADD
+# COLUMN` is the one additive, non-destructive migration SQLite supports
+# without a full migration framework — existing rows backfill with each
+# column's default.
+_RESUME_VERSION_COLUMN_MIGRATIONS = (
+    ("generation_mode", "ALTER TABLE resume_versions ADD COLUMN generation_mode TEXT NOT NULL DEFAULT 'deterministic'"),
+    ("llm_provider", "ALTER TABLE resume_versions ADD COLUMN llm_provider TEXT"),
+    ("llm_model", "ALTER TABLE resume_versions ADD COLUMN llm_model TEXT"),
+    ("rewrite_attempted", "ALTER TABLE resume_versions ADD COLUMN rewrite_attempted INTEGER NOT NULL DEFAULT 0"),
+    ("rewrite_accepted", "ALTER TABLE resume_versions ADD COLUMN rewrite_accepted INTEGER NOT NULL DEFAULT 0"),
+    ("rewrite_rejected", "ALTER TABLE resume_versions ADD COLUMN rewrite_rejected INTEGER NOT NULL DEFAULT 0"),
+    ("rewrite_provenance", "ALTER TABLE resume_versions ADD COLUMN rewrite_provenance TEXT NOT NULL DEFAULT '[]'"),
+)
+
+
+def _migrate_resume_versions_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(resume_versions)").fetchall()}
+    for column, ddl in _RESUME_VERSION_COLUMN_MIGRATIONS:
+        if column not in existing_columns:
+            connection.execute(ddl)
 
 
 def _upsert_jobs(connection: sqlite3.Connection, jobs: Iterable[Job]) -> tuple[int, int]:
@@ -1032,7 +1066,9 @@ def _from_iso(value: str | None) -> datetime | None:
 
 _RESUME_VERSION_COLUMNS = (
     "job_unique_key, version, status, latex_source, pdf_path, compiler_status, "
-    "compile_log, page_count, tailoring_analysis, created_at, updated_at, approved_at"
+    "compile_log, page_count, tailoring_analysis, generation_mode, llm_provider, "
+    "llm_model, rewrite_attempted, rewrite_accepted, rewrite_rejected, "
+    "rewrite_provenance, created_at, updated_at, approved_at"
 )
 
 
@@ -1057,14 +1093,26 @@ def insert_resume_version(
     compile_log: str | None,
     page_count: int | None,
     tailoring_analysis: dict,
+    generation_mode: str = "deterministic",
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    rewrite_attempted: int = 0,
+    rewrite_accepted: int = 0,
+    rewrite_rejected: int = 0,
+    rewrite_provenance: list | None = None,
     now: datetime | None = None,
 ) -> int:
     """Insert one new resume version. Always an insert — never updates an
-    existing row, so regeneration can never clobber a prior version."""
+    existing row, so regeneration can never clobber a prior version.
+
+    `generation_mode`/`llm_*`/`rewrite_*` all default to plain deterministic
+    generation with no LLM involvement — a caller that doesn't pass them
+    (every pre-existing call site) gets exactly the old behavior.
+    """
     now = now or utcnow()
     cursor = connection.execute(
         f"INSERT INTO resume_versions ({_RESUME_VERSION_COLUMNS}) "
-        "VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
         (
             job_unique_key,
             version,
@@ -1074,6 +1122,13 @@ def insert_resume_version(
             compile_log,
             page_count,
             json.dumps(tailoring_analysis),
+            generation_mode,
+            llm_provider,
+            llm_model,
+            rewrite_attempted,
+            rewrite_accepted,
+            rewrite_rejected,
+            json.dumps(rewrite_provenance or []),
             _to_iso(now),
             _to_iso(now),
         ),

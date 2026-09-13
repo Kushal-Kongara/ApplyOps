@@ -12,7 +12,9 @@ import type {
   JobDetail,
   JobsQuery,
   LatexSourceResponse,
+  LLMStatus,
   RecentResponse,
+  ResumeGenerationMode,
   ResumeVersionDetail,
   ResumeVersionSummary,
 } from './types'
@@ -125,8 +127,17 @@ export function getRecentJobs(query: RecentJobsQuery = {}): Promise<RecentRespon
 // called automatically (not on job collection, not on a match score, not
 // on a scheduler cycle).
 
-export function generateResume(jobId: string): Promise<ResumeVersionDetail> {
-  return request<ResumeVersionDetail>(`/api/jobs/${encodeURIComponent(jobId)}/resumes`, { method: 'POST' })
+/** `mode` defaults to `"deterministic"` — the safest option — whether
+ * omitted here or omitted from the request body the backend receives. */
+export function generateResume(jobId: string, mode: ResumeGenerationMode = 'deterministic'): Promise<ResumeVersionDetail> {
+  return request<ResumeVersionDetail>(`/api/jobs/${encodeURIComponent(jobId)}/resumes`, {
+    method: 'POST',
+    body: JSON.stringify({ mode }),
+  })
+}
+
+export function getLLMStatus(): Promise<LLMStatus> {
+  return request<LLMStatus>('/api/llm/status')
 }
 
 export function listJobResumes(jobId: string): Promise<ResumeVersionSummary[]> {

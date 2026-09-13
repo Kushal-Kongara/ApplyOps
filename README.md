@@ -50,8 +50,18 @@ Phase 7 (Job Detail + on-demand tailored resume generation) is implemented: a
 Job Detail page with the full stored job description, a deterministic
 (no-LLM) resume tailoring engine that selects/reorders your own master-resume
 content per job, a LaTeX renderer, optional local PDF compilation, and a
-version history with an approval state. Everything else below (recruiter
-discovery, auto-apply, notifications) is planned, not built.
+version history with an approval state.
+
+Phase 8 (DGX/Ollama evidence-guarded resume rewriting) is implemented: an
+optional, opt-in "DGX Enhanced" generation mode that asks a local Ollama
+model to rewrite a bounded set of the most relevant bullets one at a time,
+then runs every rewrite through a deterministic validator before ever using
+it — an unsupported technology, number, duration, or leadership claim is
+rejected and the original truthful bullet is kept instead. Deterministic
+generation (Phase 7's engine) remains the default and is unaffected by
+whether a DGX is configured or reachable. Everything else below (recruiter
+discovery, auto-apply, notifications, other LLM providers) is planned, not
+built.
 
 ## Phase 1 setup
 
@@ -366,6 +376,106 @@ python -m unittest discover -v -k resume   # resume-specific backend tests only
 There is no CLI command for resume generation in this phase — it's a
 dashboard-only action (`POST /api/jobs/{job_id}/resumes` under the hood).
 
+## Phase 8 — DGX/Ollama evidence-guarded resume rewriting
+
+**This entire feature is optional.** Deterministic resume generation (Phase 7)
+works fully with none of this configured, and never depends on a DGX being
+online — the dashboard, the API, and plain resume generation all work
+exactly the same whether or not `APPLYOPS_LLM_PROVIDER` is set.
+
+### What it does, and doesn't do
+
+"DGX Enhanced" generation asks a local LLM (via [Ollama](https://ollama.com/))
+to rewrite a small, bounded set of the most job-relevant bullets — one
+bullet at a time, never the whole resume in one call. The model is only
+ever allowed to improve wording: reorder, tighten, and emphasize facts that
+are already true. It is explicitly instructed not to add technologies,
+metrics, scale, users, responsibilities, outcomes, leadership, years, or
+projects — and even if it does anyway, a **deterministic validator**
+(`backend/app/resume/validator.py`) scans the actual generated text (never
+just the model's own self-reported claims) for exactly those categories.
+Any unsupported claim rejects the rewrite outright and falls back to the
+original, already-truthful bullet. The resume always generates successfully
+either way — a rewrite is a bonus, never a requirement.
+
+### Setup
+
+```bash
+# Nothing to install locally beyond Python deps already in pyproject.toml.
+# You need an Ollama server reachable over your network (e.g. running on
+# a DGX) with a model already pulled there — this app never pulls or
+# installs a model for you.
+```
+
+Set these in `.env` (see `.env.example` — placeholders only, never commit
+your real host):
+
+```bash
+APPLYOPS_LLM_PROVIDER=ollama
+APPLYOPS_OLLAMA_BASE_URL=http://<your-ollama-host>:11434
+APPLYOPS_OLLAMA_MODEL=<model-name-already-installed-on-that-host>
+APPLYOPS_LLM_TIMEOUT_SECONDS=30
+```
+
+Leave `APPLYOPS_LLM_PROVIDER` unset to disable this feature entirely — the
+"DGX Enhanced" button then shows as offline and generation always falls
+back to (never silently switches away from) deterministic mode.
+
+### Checking connectivity
+
+```bash
+curl http://localhost:8000/api/llm/status
+```
+
+```json
+{"provider": "ollama", "configured": true, "reachable": true, "model": "llama3.1", "error": null, "available_models": ["llama3.1"]}
+```
+
+or, if unreachable:
+
+```json
+{"provider": "ollama", "configured": true, "reachable": false, "model": "llama3.1", "error": "Could not connect to the configured Ollama server.", "available_models": null}
+```
+
+This never returns a 5xx — an offline DGX is a normal state, not a server
+error, and never blocks the rest of the dashboard from loading.
+
+### Generating with it
+
+On the Job Detail page's Resume Workspace, choose **DGX Enhanced** instead
+of **Safe / Deterministic** when generating (disabled automatically if the
+status check above reports unreachable). The resulting version gets its own
+**AI Rewrites** tab showing, for every attempted bullet: the evidence ID,
+the original text, what the model proposed, and whether it was accepted or
+rejected (with the specific reason) — rejected attempts are shown, never
+hidden. There is no "accept anyway" override; if the validator rejects a
+claim, the UI cannot be used to force it back in.
+
+### Local-network assumption and safety
+
+The Mac backend calls Ollama over your local network only — this app never
+exposes an Ollama service publicly, uses one small retry for a transient
+connection failure only (never for a timeout, never more than once), and
+applies a connect timeout and an overall request timeout
+(`APPLYOPS_LLM_TIMEOUT_SECONDS`) so an unreachable or hung server fails
+fast rather than hanging the request. The job description is always treated
+as untrusted reference data, clearly delimited in the prompt — it can never
+override the rewrite instructions, no matter what it contains.
+
+### Failure/fallback behavior
+
+| Situation | Result |
+|---|---|
+| No provider configured, deterministic requested | Works exactly as before |
+| No provider configured, `llm_enhanced` requested | Clean `503 llm_unavailable` error, no version created |
+| Provider configured but unreachable, `llm_enhanced` requested | Same clean `503`, no version created |
+| Provider reachable, one bullet's rewrite call fails | That bullet falls back to its original text; generation still succeeds; recorded as an `"error"` attempt |
+| Provider returns a rewrite with an unsupported claim | Rejected by the validator; original bullet kept; recorded as `"rejected"` with reasons |
+
+An `llm_enhanced` version is never silently mislabeled — if the mode was
+requested but the provider was never reachable, no version is created at
+all rather than a version claiming LLM-enhancement that never actually ran.
+
 ## Architecture
 
 - Python collectors, matching, and application tracking (standard-library
@@ -376,5 +486,11 @@ dashboard-only action (`POST /api/jobs/{job_id}/resumes` under the hood).
   not a current limitation)
 - React and TypeScript dashboard (`frontend/`)
 - Deterministic, evidence-bound resume tailoring (`backend/app/resume/`) —
-  keyword matching only, no LLM/paid API in this phase (see Phase 7 above)
-- NVIDIA DGX with Ollama for local AI inference (later phase)
+  keyword matching only, no LLM/paid API required (see Phase 7 above)
+- Optional LLM-enhanced bullet rewriting behind a provider abstraction
+  (`app/resume/llm_provider.py`) — `OllamaResumeProvider` is the only
+  implementation today; Nebius/OpenAI/Anthropic could be added later as new
+  provider classes without changing the rewriter, validator, or resume
+  service (see Phase 8 above). Every rewrite is still checked by a
+  deterministic validator before use — this is not a path to free-form
+  LLM generation.

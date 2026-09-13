@@ -66,7 +66,11 @@ def _flatten_skills(skills: dict[str, list[str]]) -> list[str]:
     return list(seen.values())
 
 
-def _keyword_universe() -> dict[str, list[str]]:
+def keyword_universe() -> dict[str, list[str]]:
+    """Canonical skill name -> normalized alias phrases. Exported (not just
+    used internally) so `app/resume/validator.py` can check an LLM rewrite's
+    technology claims against the exact same vocabulary tailoring itself
+    uses — one keyword list, not two that could drift apart."""
     universe = {name: [normalize_text(p) for p in phrases] for name, phrases in SKILL_ALIASES.items()}
     for name, phrases in _EXTRA_KEYWORDS.items():
         universe.setdefault(name, [normalize_text(p) for p in phrases])
@@ -81,11 +85,11 @@ def tailor_resume(master: MasterResume, job_description: str) -> tuple[TailoredR
     resume itself doesn't already carry (or vice versa).
     """
     jd_normalized = normalize_text(job_description)
-    keyword_universe = _keyword_universe()
+    universe = keyword_universe()
     flat_skills = _flatten_skills(master.skills)
     flat_skills_normalized = {normalize_text(s) for s in flat_skills}
 
-    jd_keywords = [name for name, phrases in keyword_universe.items() if any_phrase_matches(jd_normalized, phrases)]
+    jd_keywords = [name for name, phrases in universe.items() if any_phrase_matches(jd_normalized, phrases)]
 
     strong_matches: list[str] = []
     supported_but_underemphasized: list[str] = []
@@ -96,7 +100,7 @@ def tailor_resume(master: MasterResume, job_description: str) -> tuple[TailoredR
     ] + [normalize_text(bullet.text) for project in master.projects for bullet in project.bullets]
 
     for keyword in jd_keywords:
-        phrases = keyword_universe[keyword]
+        phrases = universe[keyword]
         demonstrated_in_bullet = any(any_phrase_matches(text, phrases) for text in all_bullet_texts_normalized)
         if demonstrated_in_bullet:
             strong_matches.append(keyword)
@@ -108,7 +112,7 @@ def tailor_resume(master: MasterResume, job_description: str) -> tuple[TailoredR
     supported_keyword_phrases = [
         phrase
         for name in (strong_matches + supported_but_underemphasized)
-        for phrase in keyword_universe[name]
+        for phrase in universe[name]
     ]
 
     def _bullet_relevance(bullet_text_normalized: str) -> int:
@@ -146,9 +150,9 @@ def tailor_resume(master: MasterResume, job_description: str) -> tuple[TailoredR
 
     def _skill_relevance(skill: str) -> tuple[int, int]:
         skill_normalized = normalize_text(skill)
-        if any(skill_normalized == normalize_text(name) or any_phrase_matches(skill_normalized, keyword_universe[name]) for name in strong_matches):
+        if any(skill_normalized == normalize_text(name) or any_phrase_matches(skill_normalized, universe[name]) for name in strong_matches):
             return (0, 0)
-        if any(skill_normalized == normalize_text(name) or any_phrase_matches(skill_normalized, keyword_universe[name]) for name in supported_but_underemphasized):
+        if any(skill_normalized == normalize_text(name) or any_phrase_matches(skill_normalized, universe[name]) for name in supported_but_underemphasized):
             return (1, 0)
         return (2, flat_skills.index(skill))
 

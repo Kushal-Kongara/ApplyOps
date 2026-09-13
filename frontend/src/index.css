@@ -802,3 +802,107 @@ input:disabled {
   color: var(--text-faint);
   font-size: 13px;
 }
+
+/* ---------- DGX / LLM-enhanced generation ---------- */
+
+.resume-generate-choice {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.resume-mode-tag {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.dgx-status {
+  display: inline-block;
+  font-size: 12px;
+  margin: 6px 0 14px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.dgx-status--online {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+.dgx-status--offline {
+  color: var(--text-faint);
+  background: var(--bg);
+}
+
+.dgx-status--loading {
+  color: var(--text-faint);
+}
+
+.ai-rewrites {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ai-rewrite-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.ai-rewrite-card__evidence {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.ai-rewrite-card__block {
+  margin-bottom: 8px;
+}
+
+.ai-rewrite-card__block p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ai-rewrite-card__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.ai-rewrite-card__validation {
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
+.ai-rewrite-validation {
+  font-weight: 700;
+}
+
+.ai-rewrite-validation--accepted {
+  color: var(--accent);
+}
+
+.ai-rewrite-validation--rejected {
+  color: var(--danger);
+}
+
+.ai-rewrite-card__reasons {
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.ai-rewrite-card__fallback {
+  color: var(--text-faint);
+  margin-top: 3px;
+  font-style: italic;
+}

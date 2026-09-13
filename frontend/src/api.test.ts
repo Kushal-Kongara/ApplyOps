@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { buildJobsQueryString, parseErrorDetail, resumePdfUrl } from './api'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { buildJobsQueryString, generateResume, parseErrorDetail, resumePdfUrl } from './api'
 
 describe('buildJobsQueryString', () => {
   it('returns an empty string for no filters', () => {
@@ -33,6 +33,45 @@ describe('buildJobsQueryString', () => {
 describe('resumePdfUrl', () => {
   it('builds the direct PDF endpoint path for a resume id', () => {
     expect(resumePdfUrl(42)).toBe('/api/resumes/42/pdf')
+  })
+})
+
+describe('generateResume', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubFetch() {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({}),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('defaults to deterministic mode when none is given', async () => {
+    const fetchMock = stubFetch()
+    await generateResume('greenhouse:acme:1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/jobs/greenhouse%3Aacme%3A1/resumes')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({ mode: 'deterministic' })
+  })
+
+  it('sends the requested mode explicitly', async () => {
+    const fetchMock = stubFetch()
+    await generateResume('greenhouse:acme:1', 'llm_enhanced')
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init.body)).toEqual({ mode: 'llm_enhanced' })
+  })
+
+  it('url-encodes the job id', async () => {
+    const fetchMock = stubFetch()
+    await generateResume('lever:acme:has spaces')
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/jobs/lever%3Aacme%3Ahas%20spaces/resumes')
   })
 })
 

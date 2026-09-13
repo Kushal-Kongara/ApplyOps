@@ -153,6 +153,8 @@ export interface TailoringAnalysis {
 
 export type ResumeCompilerStatus = 'not_attempted' | 'compiled' | 'unavailable' | 'failed'
 export type ResumeStatus = 'draft' | 'approved' | 'used'
+export type ResumeGenerationMode = 'deterministic' | 'llm_enhanced'
+export type RewriteValidationStatus = 'accepted' | 'rejected' | 'error'
 
 export interface ResumeVersionSummary {
   id: number
@@ -161,16 +163,42 @@ export interface ResumeVersionSummary {
   status: ResumeStatus
   compiler_status: ResumeCompilerStatus
   page_count: number | null
+  generation_mode: ResumeGenerationMode
+  llm_provider: string | null
+  llm_model: string | null
+  rewrite_attempted: number
+  rewrite_accepted: number
+  rewrite_rejected: number
   created_at: string
   updated_at: string
   approved_at: string | null
 }
 
+export interface RewriteAttempt {
+  evidence_id: string
+  original_text: string
+  rewritten_text: string | null
+  validation_status: RewriteValidationStatus
+  validation_reasons: string[]
+  provider: string
+  model: string
+}
+
 export interface ResumeVersionDetail extends ResumeVersionSummary {
   compile_log: string | null
   tailoring_analysis: TailoringAnalysis
+  rewrite_provenance: RewriteAttempt[]
 }
 
 export interface LatexSourceResponse {
   latex_source: string
+}
+
+export interface LLMStatus {
+  provider: string
+  configured: boolean
+  reachable: boolean
+  model: string | null
+  error: string | null
+  available_models: string[] | null
 }

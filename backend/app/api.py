@@ -30,6 +30,7 @@ from app.applications import ApplicationError, parse_datetime_arg, validate_stat
 from app.profile import Profile, ProfileError, load_profile
 from app.resume import service as resume_service
 from app.resume.master import DEFAULT_MASTER_RESUME_PATH, MasterResumeError
+from app.resume.ollama_provider import build_provider_from_env
 from app.resume.storage import DEFAULT_RESUMES_ROOT
 
 # Same configuration story as the CLI (`--db`/`--profile` flags), just
@@ -208,18 +209,51 @@ class ResumeVersionSummary(BaseModel):
     status: str
     compiler_status: str
     page_count: int | None
+    generation_mode: str
+    llm_provider: str | None
+    llm_model: str | None
+    rewrite_attempted: int
+    rewrite_accepted: int
+    rewrite_rejected: int
     created_at: datetime
     updated_at: datetime
     approved_at: datetime | None
 
 
+class RewriteAttemptResponse(BaseModel):
+    evidence_id: str
+    original_text: str
+    rewritten_text: str | None
+    validation_status: str
+    validation_reasons: list[str]
+    provider: str
+    model: str
+
+
 class ResumeVersionDetail(ResumeVersionSummary):
     compile_log: str | None
     tailoring_analysis: TailoringAnalysisResponse
+    rewrite_provenance: list[RewriteAttemptResponse]
 
 
 class LatexSourceResponse(BaseModel):
     latex_source: str
+
+
+class ResumeGenerateRequest(BaseModel):
+    """Omit entirely (or omit `mode`) to get the safest existing default —
+    generation never silently switches to `llm_enhanced` on its own."""
+
+    mode: str = resume_service.DEFAULT_GENERATION_MODE
+
+
+class LLMStatusResponse(BaseModel):
+    provider: str
+    configured: bool
+    reachable: bool
+    model: str | None = None
+    error: str | None = None
+    available_models: list[str] | None = None
 
 
 class ApplicationUpdateRequest(BaseModel):
@@ -488,6 +522,12 @@ def _resume_version_summary(row: sqlite3.Row) -> ResumeVersionSummary:
         status=row["status"],
         compiler_status=row["compiler_status"],
         page_count=row["page_count"],
+        generation_mode=row["generation_mode"],
+        llm_provider=row["llm_provider"],
+        llm_model=row["llm_model"],
+        rewrite_attempted=row["rewrite_attempted"],
+        rewrite_accepted=row["rewrite_accepted"],
+        rewrite_rejected=row["rewrite_rejected"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         approved_at=row["approved_at"],
@@ -496,32 +536,62 @@ def _resume_version_summary(row: sqlite3.Row) -> ResumeVersionSummary:
 
 def _resume_version_detail(row: sqlite3.Row) -> ResumeVersionDetail:
     analysis = json.loads(row["tailoring_analysis"])
+    provenance = json.loads(row["rewrite_provenance"])
     return ResumeVersionDetail(
         **_resume_version_summary(row).model_dump(),
         compile_log=row["compile_log"],
         tailoring_analysis=TailoringAnalysisResponse(**analysis),
+        rewrite_provenance=[RewriteAttemptResponse(**attempt) for attempt in provenance],
     )
 
 
 @app.post("/api/jobs/{job_id}/resumes", response_model=ResumeVersionDetail, status_code=201)
 def generate_resume(
     job_id: str,
+    payload: ResumeGenerateRequest | None = None,
     connection: sqlite3.Connection = Depends(get_connection),
 ) -> ResumeVersionDetail:
     """Generate a brand-new tailored resume version for this job.
 
     Always creates a new version (v1 the first time, v2/v3/... on every
     later call for the same job) — regeneration never overwrites or
-    returns a previously generated version.
+    returns a previously generated version. `mode` defaults to
+    `"deterministic"` whether the body is omitted entirely or sent without
+    `mode` — a client that doesn't ask for `llm_enhanced` never gets it.
     """
     job_row = _require_job(connection, job_id)
+    mode = payload.mode if payload is not None else resume_service.DEFAULT_GENERATION_MODE
     try:
         row = resume_service.generate_resume_version(
-            connection, job_row, master_resume_path=MASTER_RESUME_PATH, resumes_root=RESUMES_ROOT
+            connection, job_row, mode=mode, master_resume_path=MASTER_RESUME_PATH, resumes_root=RESUMES_ROOT
         )
+    except resume_service.InvalidResumeModeError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_mode", "message": str(exc)}) from exc
     except MasterResumeError as exc:
         raise HTTPException(status_code=409, detail={"error": "master_resume_missing", "message": str(exc)}) from exc
+    except resume_service.LLMUnavailableError as exc:
+        raise HTTPException(status_code=503, detail={"error": "llm_unavailable", "message": str(exc)}) from exc
     return _resume_version_detail(row)
+
+
+@app.get("/api/llm/status", response_model=LLMStatusResponse)
+def get_llm_status() -> LLMStatusResponse:
+    """Cheap connectivity/configuration check for the configured LLM
+    provider — used by the frontend to show "DGX Enhanced" as available or
+    offline before the user ever tries to generate with it. Never raises:
+    an unconfigured or unreachable provider is a normal, expected state for
+    a machine that hasn't set up a DGX/Ollama, not a server error."""
+    provider = build_provider_from_env()
+    if provider is None:
+        return LLMStatusResponse(
+            provider="none", configured=False, reachable=False,
+            error="No LLM provider configured. Set APPLYOPS_LLM_PROVIDER=ollama to enable DGX-enhanced generation.",
+        )
+    status = provider.status()
+    return LLMStatusResponse(
+        provider=status.provider, configured=status.configured, reachable=status.reachable,
+        model=status.model, error=status.error, available_models=status.available_models,
+    )
 
 
 @app.get("/api/jobs/{job_id}/resumes", response_model=list[ResumeVersionSummary])

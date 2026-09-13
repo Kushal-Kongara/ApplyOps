@@ -176,5 +176,50 @@ class ApproveResumeTest(ResumeApiTestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class GenerationModeTest(ResumeApiTestCase):
+    def test_no_body_defaults_to_deterministic(self):
+        response = self.client.post(f"/api/jobs/{self.job_id}/resumes")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["generation_mode"], "deterministic")
+
+    def test_explicit_deterministic_mode(self):
+        response = self.client.post(f"/api/jobs/{self.job_id}/resumes", json={"mode": "deterministic"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["generation_mode"], "deterministic")
+
+    def test_invalid_mode_is_a_clean_400(self):
+        response = self.client.post(f"/api/jobs/{self.job_id}/resumes", json={"mode": "bogus"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"]["error"], "invalid_mode")
+
+    def test_llm_enhanced_with_no_provider_configured_is_a_clean_503(self):
+        # This test process has no APPLYOPS_LLM_PROVIDER set, so this
+        # exercises the real "nothing configured" path, not a mock.
+        response = self.client.post(f"/api/jobs/{self.job_id}/resumes", json={"mode": "llm_enhanced"})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"]["error"], "llm_unavailable")
+
+    def test_llm_enhanced_failure_creates_no_version(self):
+        self.client.post(f"/api/jobs/{self.job_id}/resumes", json={"mode": "llm_enhanced"})
+        response = self.client.get(f"/api/jobs/{self.job_id}/resumes")
+        self.assertEqual(response.json(), [])
+
+
+class LLMStatusEndpointTest(ResumeApiTestCase):
+    def test_status_when_unconfigured(self):
+        response = self.client.get("/api/llm/status")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["configured"])
+        self.assertFalse(data["reachable"])
+        self.assertIsNone(data.get("model"))
+
+    def test_status_never_returns_a_5xx(self):
+        # Even fully unconfigured/unreachable, this is a normal 200 -- the
+        # dashboard must never fail to load because a DGX is offline.
+        response = self.client.get("/api/llm/status")
+        self.assertLess(response.status_code, 500)
+
+
 if __name__ == "__main__":
     unittest.main()
