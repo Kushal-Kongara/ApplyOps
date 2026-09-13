@@ -1,0 +1,67 @@
+{
+  "profile_id": "local",
+  "years_experience": 4,
+  "target_titles": [
+    "Full Stack Engineer",
+    "Full Stack Developer",
+    "Founding Engineer",
+    "Product Engineer",
+    "Forward Deployed Engineer",
+    "Frontend Engineer",
+    "Backend Engineer",
+    "Software Engineer",
+    "AI Engineer",
+    "Applied AI Engineer"
+  ],
+  "primary_locations": [
+    "San Francisco",
+    "San Jose",
+    "Santa Clara",
+    "Sunnyvale",
+    "Mountain View",
+    "Palo Alto",
+    "Redwood City",
+    "Bay Area"
+  ],
+  "allow_remote_us": true,
+  "allow_relocation_us": true,
+  "primary_skills": [
+    "React",
+    "TypeScript",
+    "Python",
+    "Node.js",
+    "PostgreSQL",
+    "AWS"
+  ],
+  "secondary_skills": [
+    "JavaScript",
+    "NestJS",
+    "Java",
+    "SQL",
+    "Prisma",
+    "REST APIs",
+    "ECS",
+    "Fargate",
+    "RDS",
+    "S3",
+    "CloudFront",
+    "Docker",
+    "GitHub Actions",
+    "CI/CD",
+    "LLMs",
+    "AI Agents",
+    "RAG",
+    "Prompt Engineering",
+    "Vapi",
+    "ElevenLabs"
+  ],
+  "excluded_title_terms": [
+    "intern",
+    "internship",
+    "new grad",
+    "university graduate",
+    "engineering manager",
+    "director",
+    "vice president"
+  ]
+}

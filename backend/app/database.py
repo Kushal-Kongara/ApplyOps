@@ -5,6 +5,7 @@ small, the queries are few, and an ORM would hide the upsert and
 deactivation behaviour that makes de-duplication work.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,34 @@ CREATE TABLE IF NOT EXISTS scan_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_runs_started_at ON scan_runs (started_at);
+
+CREATE TABLE IF NOT EXISTS job_matches (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_unique_key     TEXT    NOT NULL,
+    profile_id         TEXT    NOT NULL,
+    total_score        INTEGER NOT NULL,
+    title_score        INTEGER NOT NULL,
+    skills_score       INTEGER NOT NULL,
+    location_score     INTEGER NOT NULL,
+    seniority_score    INTEGER NOT NULL,
+    product_score      INTEGER NOT NULL,
+    matched_skills     TEXT    NOT NULL DEFAULT '[]',
+    unmatched_skills   TEXT    NOT NULL DEFAULT '[]',
+    skill_evidence     TEXT    NOT NULL DEFAULT '[]',
+    title_evidence     TEXT    NOT NULL DEFAULT '',
+    location_evidence  TEXT    NOT NULL DEFAULT '',
+    seniority_evidence TEXT    NOT NULL DEFAULT '',
+    product_evidence   TEXT    NOT NULL DEFAULT '[]',
+    visa_signal        TEXT    NOT NULL DEFAULT 'unknown',
+    visa_evidence      TEXT,
+    filtered           INTEGER NOT NULL DEFAULT 0,
+    filter_reason      TEXT,
+    scored_at          TEXT    NOT NULL,
+    UNIQUE (job_unique_key, profile_id),
+    FOREIGN KEY (job_unique_key) REFERENCES jobs (unique_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_matches_profile_score ON job_matches (profile_id, total_score DESC);
 """
 
 _JOB_COLUMNS = (
@@ -338,6 +367,205 @@ def list_scan_runs(connection: sqlite3.Connection, limit: int = 20) -> list[sqli
     ).fetchall()
 
 
+def row_to_job(row: sqlite3.Row) -> Job:
+    """Reconstruct a `Job` from a `jobs` table row (the inverse of storing one)."""
+    return Job(
+        external_id=row["external_id"],
+        source=row["source"],
+        source_identifier=row["source_identifier"],
+        company=row["company"],
+        title=row["title"],
+        location=row["location"],
+        description=row["description"],
+        application_url=row["application_url"],
+        posted_at=_from_iso(row["posted_at"]),
+        source_updated_at=_from_iso(row["source_updated_at"]),
+        first_seen_at=_from_iso(row["first_seen_at"]),
+        last_seen_at=_from_iso(row["last_seen_at"]),
+        is_active=bool(row["is_active"]),
+    )
+
+
+def get_active_jobs(connection: sqlite3.Connection) -> list[Job]:
+    """Return every active job, as `Job` objects, for match scoring.
+
+    Unlike `list_jobs` (a display helper with a default page size), this is
+    the full working set a scan should score — no limit.
+    """
+    rows = connection.execute(
+        f"SELECT {_JOB_COLUMNS} FROM jobs WHERE is_active = 1"
+    ).fetchall()
+    return [row_to_job(row) for row in rows]
+
+
+# --- job_matches ------------------------------------------------------------
+#
+# One row per (job, profile) pair. Filtering and scoring are both stored for
+# every scored job, even a filtered one — the point is to see *why* a job
+# scored or was excluded, not to hide the ones that were.
+
+_MATCH_COLUMNS = (
+    "job_unique_key, profile_id, total_score, title_score, skills_score, "
+    "location_score, seniority_score, product_score, matched_skills, "
+    "unmatched_skills, skill_evidence, title_evidence, location_evidence, "
+    "seniority_evidence, product_evidence, visa_signal, visa_evidence, "
+    "filtered, filter_reason, scored_at"
+)
+
+
+def upsert_match(
+    connection: sqlite3.Connection,
+    *,
+    job_unique_key: str,
+    profile_id: str,
+    total_score: int,
+    title_score: int,
+    skills_score: int,
+    location_score: int,
+    seniority_score: int,
+    product_score: int,
+    matched_skills: list[str],
+    unmatched_skills: list[str],
+    skill_evidence: list[str],
+    title_evidence: str,
+    location_evidence: str,
+    seniority_evidence: str,
+    product_evidence: list[str],
+    visa_signal: str,
+    visa_evidence: str | None,
+    filtered: bool,
+    filter_reason: str | None,
+    scored_at: datetime,
+) -> bool:
+    """Insert or refresh one job's score for one profile. Commits immediately.
+
+    Returns `True` if this created a new row, `False` if it updated an
+    existing one — the `UNIQUE (job_unique_key, profile_id)` constraint is
+    what makes rescoring update in place instead of piling up duplicates.
+    """
+    row = connection.execute(
+        "SELECT id FROM job_matches WHERE job_unique_key = ? AND profile_id = ?",
+        (job_unique_key, profile_id),
+    ).fetchone()
+
+    values = (
+        total_score,
+        title_score,
+        skills_score,
+        location_score,
+        seniority_score,
+        product_score,
+        json.dumps(matched_skills),
+        json.dumps(unmatched_skills),
+        json.dumps(skill_evidence),
+        title_evidence,
+        location_evidence,
+        seniority_evidence,
+        json.dumps(product_evidence),
+        visa_signal,
+        visa_evidence,
+        int(filtered),
+        filter_reason,
+        _to_iso(scored_at),
+    )
+
+    if row is None:
+        connection.execute(
+            f"INSERT INTO job_matches ({_MATCH_COLUMNS}) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (job_unique_key, profile_id, *values),
+        )
+        connection.commit()
+        return True
+
+    connection.execute(
+        """
+        UPDATE job_matches
+           SET total_score = ?,
+               title_score = ?,
+               skills_score = ?,
+               location_score = ?,
+               seniority_score = ?,
+               product_score = ?,
+               matched_skills = ?,
+               unmatched_skills = ?,
+               skill_evidence = ?,
+               title_evidence = ?,
+               location_evidence = ?,
+               seniority_evidence = ?,
+               product_evidence = ?,
+               visa_signal = ?,
+               visa_evidence = ?,
+               filtered = ?,
+               filter_reason = ?,
+               scored_at = ?
+         WHERE job_unique_key = ? AND profile_id = ?
+        """,
+        (*values, job_unique_key, profile_id),
+    )
+    connection.commit()
+    return False
+
+
+def list_matches(
+    connection: sqlite3.Connection,
+    profile_id: str,
+    min_score: int = 0,
+    limit: int = 25,
+    include_filtered: bool = False,
+) -> list[sqlite3.Row]:
+    """Return scored jobs for one profile, best/freshest first.
+
+    Joins in the job's own display fields (title, company, location, ...) so
+    callers don't need a second query per row.
+    """
+    filter_clause = "" if include_filtered else "AND jm.filtered = 0"
+    return connection.execute(
+        f"""
+        SELECT jm.*, j.title, j.company, j.location, j.source, j.application_url,
+               j.first_seen_at
+          FROM job_matches jm
+          JOIN jobs j ON j.unique_key = jm.job_unique_key
+         WHERE jm.profile_id = ?
+           AND jm.total_score >= ?
+           {filter_clause}
+         ORDER BY jm.total_score DESC, j.first_seen_at DESC
+         LIMIT ?
+        """,
+        (profile_id, min_score, limit),
+    ).fetchall()
+
+
+def get_match(
+    connection: sqlite3.Connection, job_unique_key: str, profile_id: str
+) -> sqlite3.Row | None:
+    """Return one job's full score breakdown for one profile, joined with the job."""
+    return connection.execute(
+        """
+        SELECT jm.*, j.title, j.company, j.location, j.source, j.description,
+               j.application_url, j.first_seen_at
+          FROM job_matches jm
+          JOIN jobs j ON j.unique_key = jm.job_unique_key
+         WHERE jm.job_unique_key = ? AND jm.profile_id = ?
+        """,
+        (job_unique_key, profile_id),
+    ).fetchone()
+
+
+def count_matches(
+    connection: sqlite3.Connection, profile_id: str, min_score: int = 0
+) -> int:
+    """Count non-filtered scored jobs for one profile at or above `min_score`."""
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS n FROM job_matches
+         WHERE profile_id = ? AND filtered = 0 AND total_score >= ?
+        """,
+        (profile_id, min_score),
+    ).fetchone()
+    return int(row["n"])
+
+
 def _to_iso(value: datetime | None) -> str | None:
     """Store datetimes as ISO-8601 UTC strings."""
     if value is None:
@@ -345,3 +573,10 @@ def _to_iso(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
+
+
+def _from_iso(value: str | None) -> datetime | None:
+    """Parse a stored ISO-8601 string back into a timezone-aware datetime."""
+    if value is None:
+        return None
+    return datetime.fromisoformat(value)

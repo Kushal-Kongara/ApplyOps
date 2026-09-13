@@ -1,10 +1,15 @@
-"""Command line entry point for Phase 1 job collection.
+"""Command line entry point for job collection and match scoring.
 
     python -m app.cli scan --config config/sources.json
     python -m app.cli list-jobs
+    python -m app.cli match --profile config/profile.json
+    python -m app.cli list-matches --min-score 70 --limit 25 --show-key
+    python -m app.cli inspect-match --job-key <job-unique-key>
+    python -m app.cli inspect-match <search-text>
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -16,7 +21,14 @@ import httpx
 from app import database
 from app.collectors import COLLECTORS, JobCollector
 from app.config import ConfigError, SourceConfig, load_sources
+from app.matching import MatchResult, evaluate_job
+from app.matching.location import MAX_LOCATION_SCORE
+from app.matching.product import MAX_PRODUCT_SCORE
+from app.matching.seniority import MAX_SENIORITY_SCORE
+from app.matching.skills import MAX_SKILL_SCORE
+from app.matching.titles import MAX_TITLE_SCORE
 from app.models import utcnow
+from app.profile import Profile, ProfileError, load_profile
 
 
 @dataclass(slots=True)
@@ -137,6 +149,103 @@ def print_summary(results: Sequence[SourceResult], out: TextIO = sys.stdout) -> 
     print(line, file=out)
 
 
+@dataclass(slots=True)
+class MatchSummary:
+    """What happened when scoring all active jobs against one profile."""
+
+    total: int = 0
+    filtered: int = 0
+    scored: int = 0
+    high_score: int = 0  # scored (not filtered) jobs at or above HIGH_SCORE_THRESHOLD
+
+
+HIGH_SCORE_THRESHOLD = 70
+
+
+def _store_match(connection: sqlite3.Connection, match: MatchResult) -> None:
+    """Persist one `MatchResult`. Thin glue so `database` never imports `matching`."""
+    database.upsert_match(
+        connection,
+        job_unique_key=match.job_unique_key,
+        profile_id=match.profile_id,
+        total_score=match.total_score,
+        title_score=match.components.title,
+        skills_score=match.components.skills,
+        location_score=match.components.location,
+        seniority_score=match.components.seniority,
+        product_score=match.components.product,
+        matched_skills=match.matched_skills,
+        unmatched_skills=match.unmatched_skills,
+        skill_evidence=match.skill_evidence,
+        title_evidence=match.title_evidence,
+        location_evidence=match.location_evidence,
+        seniority_evidence=match.seniority_evidence,
+        product_evidence=match.product_evidence,
+        visa_signal=match.visa.status,
+        visa_evidence=match.visa.evidence,
+        filtered=match.filter_result.filtered,
+        filter_reason=match.filter_result.reason,
+        scored_at=match.scored_at,
+    )
+
+
+def match_jobs(
+    connection: sqlite3.Connection, profile: Profile, out: TextIO = sys.stdout
+) -> MatchSummary:
+    """Score every active job against `profile` and store the results.
+
+    Filtering and scoring both always run — a filtered job is still scored
+    and stored, just flagged, so its score stays inspectable later.
+    """
+    summary = MatchSummary()
+
+    for job in database.get_active_jobs(connection):
+        match = evaluate_job(job, profile)
+        _store_match(connection, match)
+
+        summary.total += 1
+        if match.filter_result.filtered:
+            summary.filtered += 1
+        else:
+            summary.scored += 1
+            if match.total_score >= HIGH_SCORE_THRESHOLD:
+                summary.high_score += 1
+
+    print(
+        f"Matched {summary.total} active job(s) against profile '{profile.profile_id}': "
+        f"{summary.scored} scored, {summary.filtered} filtered out.",
+        file=out,
+    )
+    if summary.scored:
+        print(f"  {summary.high_score} job(s) scored {HIGH_SCORE_THRESHOLD}+.", file=out)
+
+    return summary
+
+
+def format_match_line(row: sqlite3.Row, show_key: bool = False) -> str:
+    """Render one scored job the way `list-matches` prints it."""
+    matched_skills = json.loads(row["matched_skills"])
+    location = row["location"] or "location unknown"
+
+    lines = [
+        f"{row['total_score']:>3}  {row['title']} — {row['company']}",
+        f"    {location} | {row['source']}",
+        (
+            f"    Title {row['title_score']}/{MAX_TITLE_SCORE} | "
+            f"Skills {row['skills_score']}/{MAX_SKILL_SCORE} | "
+            f"Location {row['location_score']}/{MAX_LOCATION_SCORE} | "
+            f"Seniority {row['seniority_score']}/{MAX_SENIORITY_SCORE} | "
+            f"Product {row['product_score']}/{MAX_PRODUCT_SCORE}"
+        ),
+        f"    Visa: {row['visa_signal']}",
+    ]
+    if matched_skills:
+        lines.append(f"    Matched: {', '.join(matched_skills)}")
+    if show_key:
+        lines.append(f"    Key: {row['job_unique_key']}")
+    return "\n".join(lines)
+
+
 def _cmd_scan(args: argparse.Namespace, out: TextIO | None = None) -> int:
     out = out or sys.stdout
 
@@ -183,9 +292,147 @@ def _cmd_list_jobs(args: argparse.Namespace, out: TextIO | None = None) -> int:
     return 0
 
 
+def _cmd_match(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    try:
+        profile = load_profile(args.profile)
+    except ProfileError as exc:
+        print(f"Profile error: {exc}", file=sys.stderr)
+        return 2
+
+    connection = database.connect(args.db)
+    try:
+        match_jobs(connection, profile, out=out)
+    finally:
+        connection.close()
+
+    return 0
+
+
+def _cmd_list_matches(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    try:
+        profile = load_profile(args.profile)
+    except ProfileError as exc:
+        print(f"Profile error: {exc}", file=sys.stderr)
+        return 2
+
+    connection = database.connect(args.db)
+    try:
+        rows = database.list_matches(
+            connection, profile.profile_id, min_score=args.min_score, limit=args.limit
+        )
+    finally:
+        connection.close()
+
+    if not rows:
+        print("No matches at or above that score. Run `match` first.", file=out)
+        return 0
+
+    print("\n\n".join(format_match_line(row, show_key=args.show_key) for row in rows), file=out)
+    print(f"\n{len(rows)} job(s) shown.", file=out)
+    return 0
+
+
+def _cmd_inspect_match(args: argparse.Namespace, out: TextIO | None = None) -> int:
+    out = out or sys.stdout
+
+    query = args.job_key or args.job
+    if not query:
+        print("Provide a job key with --job-key, or search text as a positional argument.", file=sys.stderr)
+        return 2
+
+    try:
+        profile = load_profile(args.profile)
+    except ProfileError as exc:
+        print(f"Profile error: {exc}", file=sys.stderr)
+        return 2
+
+    connection = database.connect(args.db)
+    try:
+        row = database.get_match(connection, query, profile.profile_id)
+        if row is None and not args.job_key:
+            # Not an exact key — try it as a title/company search instead.
+            candidates = database.list_matches(
+                connection, profile.profile_id, min_score=0, limit=10_000, include_filtered=True
+            )
+            needle = query.lower()
+            matches = [
+                r for r in candidates
+                if needle in r["title"].lower() or needle in r["company"].lower()
+            ]
+            if len(matches) == 1:
+                row = matches[0]
+            elif len(matches) > 1:
+                print(f"'{query}' matches {len(matches)} jobs — be more specific, or use a job's "
+                      "exact key with --job-key:", file=out)
+                for candidate in matches:
+                    print(f"  {candidate['job_unique_key']}  {candidate['title']} — {candidate['company']}", file=out)
+                return 1
+    finally:
+        connection.close()
+
+    if row is None:
+        print(f"No scored job found matching '{query}'. Run `match` first.", file=out)
+        return 1
+
+    print(_format_inspection(row, profile), file=out)
+    return 0
+
+
+def _format_inspection(row: sqlite3.Row, profile: Profile) -> str:
+    """Full, human-readable breakdown of one job's score — for `inspect-match`."""
+    matched = json.loads(row["matched_skills"])
+    unmatched = json.loads(row["unmatched_skills"])
+    skill_evidence = json.loads(row["skill_evidence"])
+    product_evidence = json.loads(row["product_evidence"])
+
+    primary_set = set(profile.primary_skills)
+    matched_primary = [s for s in matched if s in primary_set]
+    matched_secondary = [s for s in matched if s not in primary_set]
+    unmatched_primary = [s for s in unmatched if s in primary_set]
+    unmatched_secondary = [s for s in unmatched if s not in primary_set]
+
+    lines = [
+        f"{row['title']} — {row['company']} ({row['source']})",
+        f"{row['location'] or 'location unknown'} | {row['application_url']}",
+        f"Key: {row['job_unique_key']}",
+        "",
+        f"Total score: {row['total_score']}/100",
+    ]
+    if row["filtered"]:
+        lines.append(f"FILTERED OUT: {row['filter_reason']}")
+    lines += [
+        "",
+        f"Title     {row['title_score']:>3}/{MAX_TITLE_SCORE}  — {row['title_evidence']}",
+        f"Skills    {row['skills_score']:>3}/{MAX_SKILL_SCORE}",
+        f"  matched primary:     {', '.join(matched_primary) or '(none)'}",
+        f"  matched secondary:   {', '.join(matched_secondary) or '(none)'}",
+        f"  unmatched primary:   {', '.join(unmatched_primary) or '(none)'}",
+        f"  unmatched secondary: {', '.join(unmatched_secondary) or '(none)'}"
+        f"  (profile skills not found in this posting, not requirements it lacks)",
+    ]
+    if skill_evidence:
+        lines.append(f"  evidence:            {'; '.join(skill_evidence)}")
+    lines += [
+        f"Location  {row['location_score']:>3}/{MAX_LOCATION_SCORE}  — {row['location_evidence']}",
+        f"Seniority {row['seniority_score']:>3}/{MAX_SENIORITY_SCORE}  — {row['seniority_evidence']}",
+        f"Product   {row['product_score']:>3}/{MAX_PRODUCT_SCORE}  — {', '.join(product_evidence) or '(no evidence found)'}",
+        "",
+        f"Visa signal: {row['visa_signal']}",
+    ]
+    if row["visa_evidence"]:
+        lines.append(f"  evidence: \"{row['visa_evidence']}\"")
+    lines.append(f"Scored at: {row['scored_at']}")
+
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m app.cli", description="ApplyOps job collection (Phase 1)."
+        prog="python -m app.cli", description="ApplyOps job collection and match scoring."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -211,6 +458,41 @@ def build_parser() -> argparse.ArgumentParser:
         "--all", action="store_true", help="Include jobs that are no longer active."
     )
     list_parser.set_defaults(handler=_cmd_list_jobs)
+
+    match_parser = subparsers.add_parser(
+        "match", help="Score every active job against a profile and store the results."
+    )
+    match_parser.add_argument(
+        "--profile",
+        default="config/profile.json",
+        type=Path,
+        help="Path to the profile JSON file (default: config/profile.json).",
+    )
+    match_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    match_parser.set_defaults(handler=_cmd_match)
+
+    list_matches_parser = subparsers.add_parser("list-matches", help="Show scored jobs.")
+    list_matches_parser.add_argument("--profile", default="config/profile.json", type=Path)
+    list_matches_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    list_matches_parser.add_argument(
+        "--min-score", default=0, type=int, help="Only show jobs scoring at least this much."
+    )
+    list_matches_parser.add_argument("--limit", default=25, type=int, help="Maximum jobs to show.")
+    list_matches_parser.add_argument(
+        "--show-key", action="store_true", help="Also print each job's unique key (to copy into inspect-match)."
+    )
+    list_matches_parser.set_defaults(handler=_cmd_list_matches)
+
+    inspect_parser = subparsers.add_parser(
+        "inspect-match", help="Show the full score breakdown for one job."
+    )
+    inspect_parser.add_argument(
+        "job", nargs="?", default=None, help="Text to search title/company for (ignored if --job-key is given)."
+    )
+    inspect_parser.add_argument("--job-key", default=None, help="A job's exact unique key.")
+    inspect_parser.add_argument("--profile", default="config/profile.json", type=Path)
+    inspect_parser.add_argument("--db", default=database.DEFAULT_DB_PATH, type=Path)
+    inspect_parser.set_defaults(handler=_cmd_inspect_match)
 
     return parser
 

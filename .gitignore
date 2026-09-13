@@ -19,6 +19,7 @@ backend/data/
 
 # Private source configuration (keep the example committed)
 backend/config/sources.json
+backend/config/profile.json
 
 # Frontend
 node_modules/
