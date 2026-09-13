@@ -1,0 +1,17 @@
+[
+  {
+    "type": "greenhouse",
+    "company": "Example Company",
+    "identifier": "example"
+  },
+  {
+    "type": "ashby",
+    "company": "Example Startup",
+    "identifier": "example"
+  },
+  {
+    "type": "lever",
+    "company": "Example Labs",
+    "identifier": "example"
+  }
+]

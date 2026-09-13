@@ -24,10 +24,65 @@ human approval.
 - Workday
 - Selected company career pages
 
+## Status
+
+Phase 1 (job collection foundation) is implemented: collectors for Greenhouse,
+Ashby, and Lever, a normalized job model, SQLite storage with de-duplication,
+and a CLI. Everything else below is planned, not built.
+
+## Phase 1 setup
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+cd backend
+cp config/sources.example.json config/sources.json
+```
+
+Edit `backend/config/sources.json` with the companies you care about. Each entry
+needs a `type` (`greenhouse`, `ashby`, or `lever`), a `company` name, and the
+board `identifier` from the company's public board URL, e.g.
+`https://boards.greenhouse.io/COMPANY_BOARD_TOKEN` -> `COMPANY_BOARD_TOKEN`.
+That file is git-ignored; `sources.example.json` is the committed template.
+Verify each company's real board token/site name yourself — this doc doesn't
+list any.
+
+## Phase 1 commands
+
+```bash
+cd backend
+
+# Collect jobs from every configured source.
+python -m app.cli scan --config config/sources.json
+
+# Show what has been stored.
+python -m app.cli list-jobs
+
+# Run the test suite (no network access required).
+python -m unittest discover -v
+```
+
+`scan` prints one line per source plus a summary, and exits non-zero if any
+source failed:
+
+```text
+Adobe / greenhouse: 42 fetched, 7 new, 35 updated
+Example Startup / ashby: failed - useful error
+Scan complete: 7 new jobs, 35 updated, 1 source failed
+```
+
+Jobs are stored in `backend/data/applyops.db` by default (override with `--db`).
+The database is git-ignored.
+
+See [docs/phase-01-job-collection.md](docs/phase-01-job-collection.md) for how
+collectors, normalization, and the de-duplication key work.
+
 ## Architecture
 
-- Python collectors
-- FastAPI backend
-- PostgreSQL database
+- Python collectors (Phase 1: standard-library `sqlite3` + `httpx`)
+- FastAPI backend (later phase)
+- PostgreSQL database (later phase)
 - React and TypeScript dashboard
 - NVIDIA DGX with Ollama for local AI inference

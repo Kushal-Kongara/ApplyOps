@@ -13,8 +13,12 @@ __pycache__/
 
 # Generated data
 data/
+backend/data/
 *.db
 *.sqlite3
+
+# Private source configuration (keep the example committed)
+backend/config/sources.json
 
 # Frontend
 node_modules/
