@@ -1064,6 +1064,14 @@ input:disabled {
   margin: 0 0 10px;
 }
 
+.ats-fill-result__ats {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+
 .ats-fill-result__row {
   font-size: 13px;
   padding: 3px 0;

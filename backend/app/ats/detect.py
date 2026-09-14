@@ -5,8 +5,9 @@ all; everything else is `None` ("Unsupported ATS — open manually")."""
 SUPPORTED_ATS = ("lever", "ashby", "greenhouse")
 
 # Which of the supported ATS this phase actually has fill logic for.
-# Built and verified one at a time, per the phase spec -- Lever first.
-IMPLEMENTED_ATS = ("lever",)
+# Built and verified one at a time, per the phase spec -- Lever first,
+# then Ashby and Greenhouse. All three are now implemented.
+IMPLEMENTED_ATS = ("lever", "ashby", "greenhouse")
 
 _HOST_MARKERS: dict[str, str] = {
     "jobs.lever.co": "lever",

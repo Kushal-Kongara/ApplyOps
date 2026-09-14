@@ -28,14 +28,16 @@ class FillApplicationPreflightTest(unittest.TestCase):
         with self.assertRaises(ats_service.UnsupportedAtsError):
             ats_service.fill_application(self.connection, job_row, preparation_id=1)
 
-    def test_recognized_but_unimplemented_ats_raises(self):
+    def test_ashby_is_recognized_and_implemented(self):
+        # Ashby has real fill logic now -- an unmatched preparation_id
+        # fails on the preparation lookup, not on `AtsNotImplementedError`.
         job_row = self._job("https://jobs.ashbyhq.com/acme/abc123")
-        with self.assertRaises(ats_service.AtsNotImplementedError):
+        with self.assertRaises(ats_service.PreparationNotReadyError):
             ats_service.fill_application(self.connection, job_row, preparation_id=1)
 
-    def test_greenhouse_is_recognized_but_unimplemented(self):
+    def test_greenhouse_is_recognized_and_implemented(self):
         job_row = self._job("https://boards.greenhouse.io/acme/jobs/123")
-        with self.assertRaises(ats_service.AtsNotImplementedError):
+        with self.assertRaises(ats_service.PreparationNotReadyError):
             ats_service.fill_application(self.connection, job_row, preparation_id=1)
 
     def test_missing_preparation_raises(self):

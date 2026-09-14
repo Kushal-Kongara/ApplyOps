@@ -24,10 +24,11 @@ class DetectAtsTest(unittest.TestCase):
     def test_empty_url_returns_none(self):
         self.assertIsNone(detect_ats(""))
 
-    def test_only_lever_is_implemented_yet(self):
-        self.assertEqual(IMPLEMENTED_ATS, ("lever",))
-        self.assertIn("ashby", SUPPORTED_ATS)
-        self.assertIn("greenhouse", SUPPORTED_ATS)
+    def test_every_supported_ats_is_implemented(self):
+        self.assertEqual(set(IMPLEMENTED_ATS), set(SUPPORTED_ATS))
+        self.assertIn("lever", IMPLEMENTED_ATS)
+        self.assertIn("ashby", IMPLEMENTED_ATS)
+        self.assertIn("greenhouse", IMPLEMENTED_ATS)
 
 
 class ApplyUrlForTest(unittest.TestCase):

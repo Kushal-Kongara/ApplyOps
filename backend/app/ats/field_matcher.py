@@ -13,6 +13,8 @@ _KNOWN_FIELD_SYNONYMS: dict[str, str] = {
     "full name": "full_name",
     "name": "full_name",
     "your name": "full_name",
+    "first name": "first_name",
+    "last name": "last_name",
     "email": "email",
     "email address": "email",
     "phone": "phone",
@@ -20,6 +22,7 @@ _KNOWN_FIELD_SYNONYMS: dict[str, str] = {
     "mobile number": "phone",
     "location": "location",
     "current location": "location",
+    "location city": "location",  # Greenhouse's default "Location (City)" label
     "linkedin": "linkedin",
     "linkedin profile": "linkedin",
     "linkedin url": "linkedin",
@@ -54,7 +57,7 @@ _KNOWN_FIELD_SYNONYMS: dict[str, str] = {
 # Substring markers -- never auto-answered unless the profile has an
 # explicit policy (checked by the caller, not here).
 _SENSITIVE_MARKERS = (
-    "race", "ethnicity", "gender", "disability", "veteran",
+    "race", "ethnicity", "hispanic", "latino", "gender", "disability", "veteran",
     "religion", "sexual orientation", "pronoun",
 )
 
@@ -86,6 +89,16 @@ def is_sensitive_field(label: str) -> bool:
 def is_legal_attestation_field(label: str) -> bool:
     normalized = normalize_label(label)
     return any(marker in normalized for marker in _LEGAL_ATTESTATION_MARKERS)
+
+
+def is_sponsorship_question(label: str) -> bool:
+    """A narrower, keyword-based fallback for `match_known_field` --
+    Greenhouse's own default sponsorship question embeds the company name
+    ("...sponsorship to work at Acme?"), so no fixed phrase can ever match
+    it exactly across postings. Still fully deterministic: both keywords
+    must be present, no fuzzy/partial scoring."""
+    normalized = normalize_label(label)
+    return "sponsorship" in normalized and ("future" in normalized or "now" in normalized)
 
 
 def match_prepared_answer(label: str, prepared_question_texts: list[str]) -> int | None:

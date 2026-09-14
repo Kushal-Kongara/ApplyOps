@@ -237,6 +237,7 @@ function FillResultSummary({
   return (
     <div className="ats-fill-result">
       <h4>Application Filled</h4>
+      {result.ats && <p className="ats-fill-result__ats">ATS: {result.ats[0].toUpperCase() + result.ats.slice(1)}</p>}
 
       {result.error && (
         <div className="job-card__error">
@@ -362,7 +363,11 @@ export function ApplicationPreparation({ jobId }: Props) {
       const result = await fillApplication(jobId, selectedId)
       setFillResult(result)
     } catch (err) {
-      setFillError(errorMessage(err))
+      if (err instanceof ApiError && err.code === 'unsupported_ats') {
+        setFillError('Unsupported ATS. Open the application manually.')
+      } else {
+        setFillError(errorMessage(err))
+      }
     } finally {
       setFilling(false)
     }

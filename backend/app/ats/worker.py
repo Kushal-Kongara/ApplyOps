@@ -8,11 +8,11 @@ the first call's browser is meant to stay open indefinitely for review
 anyway. So each fill attempt gets its own OS process instead: this module,
 invoked as `python -m app.ats.worker <input.json> <output.json>`.
 
-Reads the fill request from `input.json`, performs it with the exact same
-`app.ats.lever` logic the rest of this app uses, writes the result to
-`output.json`, then blocks forever so its browser stays open -- the parent
-process reads `output.json` and returns immediately, never waiting for
-this process to exit.
+Reads the fill request from `input.json`, dispatches to the matching
+`app.ats.lever`/`app.ats.ashby`/`app.ats.greenhouse` module by `payload["ats"]`,
+writes the result to `output.json`, then blocks forever so its browser
+stays open -- the parent process reads `output.json` and returns
+immediately, never waiting for this process to exit.
 """
 
 import dataclasses
@@ -24,7 +24,20 @@ import time
 from playwright.sync_api import sync_playwright
 
 from app.application_prep.profile import load_applicant_profile
-from app.ats import lever
+from app.ats import ashby, greenhouse, lever
+
+# One fill/upload function pair per implemented ATS (`app.ats.detect.IMPLEMENTED_ATS`)
+# -- each module owns its own real-DOM-verified logic; this is only routing.
+_FILL_FUNCS = {
+    "lever": lever.fill_lever_form,
+    "ashby": ashby.fill_ashby_form,
+    "greenhouse": greenhouse.fill_greenhouse_form,
+}
+_UPLOAD_FUNCS = {
+    "lever": lever.upload_resume,
+    "ashby": ashby.upload_resume,
+    "greenhouse": greenhouse.upload_resume,
+}
 
 
 def _write_result(output_path: str, data: dict) -> None:
@@ -59,7 +72,10 @@ def main() -> None:
         browser = playwright.chromium.launch(headless=payload.get("headless", False))
         page = browser.new_page()
         page.goto(payload["form_url"], wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(1000)
+        # Ashby/Greenhouse hydrate their whole form client-side after
+        # `domcontentloaded` -- 1s (enough for Lever's near-static page)
+        # isn't reliably enough for that, so wait longer for both.
+        page.wait_for_timeout(3000)
     except Exception as exc:
         if browser is not None:
             browser.close()
@@ -68,16 +84,19 @@ def main() -> None:
         _write_result(output_path, result)
         return
 
+    upload_fn = _UPLOAD_FUNCS[payload["ats"]]
+    fill_fn = _FILL_FUNCS[payload["ats"]]
+
     pdf_path = payload.get("pdf_path")
     if not pdf_path:
         result["resume_error"] = "No compiled PDF exists for the approved resume version."
     else:
-        uploaded, resume_error = lever.upload_resume(page, pdf_path)
+        uploaded, resume_error = upload_fn(page, pdf_path)
         result["resume_uploaded"] = uploaded
         result["resume_error"] = resume_error
 
     try:
-        fields = lever.fill_lever_form(page, profile, payload["prepared_answers"])
+        fields = fill_fn(page, profile, payload["prepared_answers"])
         result["fields"] = [dataclasses.asdict(f) for f in fields]
     except Exception as exc:
         result["error"] = f"Form filling stopped early: {exc}"

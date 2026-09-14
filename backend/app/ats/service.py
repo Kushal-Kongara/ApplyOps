@@ -33,8 +33,9 @@ class UnsupportedAtsError(RuntimeError):
 
 
 class AtsNotImplementedError(RuntimeError):
-    """The ATS is recognized but this phase hasn't built fill logic for
-    it yet (Ashby, Greenhouse)."""
+    """The ATS is recognized (`app.ats.detect.SUPPORTED_ATS`) but has no
+    fill logic yet (`app.ats.detect.IMPLEMENTED_ATS`) -- currently every
+    supported ATS is implemented, so this only guards a future addition."""
 
 
 class PreparationNotReadyError(RuntimeError):
