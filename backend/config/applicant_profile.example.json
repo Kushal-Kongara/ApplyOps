@@ -1,0 +1,36 @@
+{
+  "identity": {
+    "full_name": "Jordan Example",
+    "email": "jordan.example@example.com",
+    "phone": "+1 (555) 010-0100",
+    "location": "Remote"
+  },
+  "links": {
+    "linkedin": "https://linkedin.com/in/jordan-example",
+    "github": "https://github.com/jordan-example",
+    "portfolio": ""
+  },
+  "work_authorization": {
+    "authorized_to_work": true,
+    "requires_sponsorship_now": false,
+    "requires_sponsorship_future": false,
+    "status_label": "Authorized to work, no sponsorship required"
+  },
+  "preferences": {
+    "relocation": "Open to relocation for the right role",
+    "remote": "Open to remote or hybrid",
+    "start_availability": "Two weeks notice",
+    "salary_expectation": {
+      "mode": "user_input"
+    }
+  },
+  "education": [
+    {
+      "school": "Example State University",
+      "degree": "B.S. in Computer Science",
+      "graduation_year": "2019"
+    }
+  ],
+  "demographic_response_policy": null,
+  "custom_facts": {}
+}

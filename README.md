@@ -59,9 +59,19 @@ then runs every rewrite through a deterministic validator before ever using
 it — an unsupported technology, number, duration, or leadership claim is
 rejected and the original truthful bullet is kept instead. Deterministic
 generation (Phase 7's engine) remains the default and is unaffected by
-whether a DGX is configured or reachable. Everything else below (recruiter
-discovery, auto-apply, notifications, other LLM providers) is planned, not
-built.
+whether a DGX is configured or reachable.
+
+Phase 9 (application preparation) is implemented: turns a job + an approved
+resume + your own local applicant facts into a reviewed set of application
+answers. Stable personal facts (name, contact, work authorization, links)
+resolve deterministically from a local, gitignored `applicant_profile.json`;
+open-ended questions ("Why this role?") can optionally be generated from
+resume evidence via the same DGX/Ollama provider Phase 8 added, run through
+the same kind of no-fabrication validator. Nothing is scraped from a real
+ATS yet, nothing is submitted, and no job is ever marked "applied" by this
+phase — it ends at a reviewed, ready-for-a-human packet of answers.
+Everything else below (recruiter discovery, auto-apply, notifications,
+other LLM providers, browser automation) is planned, not built.
 
 ## Phase 1 setup
 
@@ -476,6 +486,80 @@ An `llm_enhanced` version is never silently mislabeled — if the mode was
 requested but the provider was never reachable, no version is created at
 all rather than a version claiming LLM-enhancement that never actually ran.
 
+## Phase 9 — application preparation
+
+Turns **Job + Approved Resume + your local applicant facts** into a
+reviewed packet of application answers. This phase does **not** fill out
+or submit a real application form — it ends at "ready for you to review and
+use," never automatically.
+
+### Applicant facts setup (required)
+
+```bash
+cd backend
+cp config/applicant_profile.example.json config/applicant_profile.json
+```
+
+Edit `backend/config/applicant_profile.json` with your own real, truthful
+details — identity, links, work authorization, preferences, education. This
+file is git-ignored; only the fictional `applicant_profile.example.json` is
+committed. Until it exists, generating a preparation fails cleanly with
+`applicant_profile_missing` rather than guessing anything about you.
+
+### Deterministic vs. generated answers
+
+Stable personal facts — name, email, phone, location, links, work
+authorization, sponsorship, relocation, availability, education, and salary
+(only if you've set an explicit range in your profile) — are answered
+**deterministically** straight from `applicant_profile.json`, no LLM
+involved. A "how many years of X" question is answered by a deterministic
+calculator that only counts master-resume experience entries whose bullets
+explicitly demonstrate that technology — never by treating a skill merely
+listed in your skills section as N years of experience.
+
+Open-ended questions ("Why this role?", "Describe your most relevant
+experience") can optionally be generated from your master-resume evidence
+using the same DGX/Ollama provider Phase 8 added — one question at a time,
+never the whole application in one call — and every generated answer is
+checked by the same kind of no-fabrication validator (no new technologies,
+metrics, years, or leadership claims). A rejected or unavailable generation
+becomes `needs_user_input`, never a fabricated guess.
+
+**Demographic/protected questions** (race, gender, disability, veteran
+status, etc.) always require your input unless you've set an explicit
+`demographic_response_policy: "prefer_not_to_answer"` in your profile —
+this is never inferred.
+
+### Evidence and provenance
+
+Every answer records where it came from —
+`applicant_profile` / `master_resume` / `generated_from_evidence` /
+`user_input_required` / `user_edited` — and a generated answer also
+records which master-resume evidence bullet IDs it drew on. Nothing is
+ever shown as authoritative without one of these.
+
+### Using it
+
+On a Job Detail page with an **approved** resume, click **Prepare
+Application** — preparation requires an approved resume version and won't
+silently fall back to a draft. You can add a custom question ("Describe a
+project using AI/LLMs") at any point; it resolves the next time you
+regenerate. Editing any answer directly marks it "edited by you" —
+regeneration never overwrites an edited answer.
+
+A preparation becomes **ready** once every *required* question has an
+answer that doesn't need your input and a resume is selected; an
+unanswered optional question never blocks readiness. This phase never
+marks the underlying job "applied."
+
+### DGX behavior
+
+Exactly the same optional, environment-configured provider as Phase 8
+(`APPLYOPS_LLM_PROVIDER`/`APPLYOPS_OLLAMA_*`). If it's offline or
+unconfigured, deterministic answers still resolve fully and the
+preparation is still created — only the open-ended generated questions
+fall back to `needs_user_input`.
+
 ## Architecture
 
 - Python collectors, matching, and application tracking (standard-library
@@ -494,3 +578,9 @@ all rather than a version claiming LLM-enhancement that never actually ran.
   service (see Phase 8 above). Every rewrite is still checked by a
   deterministic validator before use — this is not a path to free-form
   LLM generation.
+- Application preparation (`backend/app/application_prep/`) — deterministic
+  answers from a local applicant-facts profile, evidence-checked generated
+  answers for open-ended questions, reusing the same provider abstraction
+  and fabrication checks as resume rewriting (see Phase 9 above). Never
+  scrapes a real ATS form, never submits anything, never marks a job
+  "applied."

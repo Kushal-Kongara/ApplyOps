@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ApplicationPreparation } from '../components/ApplicationPreparation'
 import { AsyncSection } from '../components/AsyncSection'
 import { ResumeWorkspace } from '../components/ResumeWorkspace'
 import { getJob, updateApplication } from '../api'
@@ -139,6 +140,11 @@ export function JobDetailPage({ jobId, onBack }: Props) {
             <section className="page-section">
               <h2>Tailored Resume</h2>
               <ResumeWorkspace jobId={jobId} />
+            </section>
+
+            <section className="page-section">
+              <h2>Application Preparation</h2>
+              <ApplicationPreparation jobId={jobId} />
             </section>
           </>
         )}

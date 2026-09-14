@@ -147,6 +147,69 @@ class UnsupportedLeadershipTest(unittest.TestCase):
         self.assertTrue(result.accepted)
 
 
+class LeadershipCanonicalizationTest(unittest.TestCase):
+    """A rewrite may reconjugate a leadership/ownership concept the
+    evidence already supports (owning -> owned) -- canonicalization is
+    per-verb-family, not a general stemmer, and it never authorizes new
+    scope or scale."""
+
+    def test_owning_evidence_owned_answer_is_accepted(self):
+        original = ORIGINAL + " Served as founding engineer, owning engineering across frontend and backend."
+        result = validate_rewrite(
+            original,
+            "Owned engineering across frontend and backend using React, TypeScript, and Python.",
+            ALLOWED_FACTS,
+        )
+        self.assertTrue(result.accepted)
+
+    def test_owned_evidence_owning_answer_is_accepted(self):
+        original = ORIGINAL + " Owned the delivery pipeline end to end."
+        result = validate_rewrite(
+            original,
+            "Owning delivery of full-stack features using React, TypeScript, and Python end to end.",
+            ALLOWED_FACTS,
+        )
+        self.assertTrue(result.accepted)
+
+    def test_leading_evidence_led_answer_is_accepted(self):
+        original = ORIGINAL + " Leading a cross-functional initiative to ship the feature."
+        result = validate_rewrite(
+            original,
+            "Led a cross-functional initiative using React, TypeScript, and Python to ship the feature.",
+            ALLOWED_FACTS,
+        )
+        self.assertTrue(result.accepted)
+
+    def test_unsupported_led_is_still_rejected_when_no_leadership_family_present(self):
+        # Evidence never uses any leadership-family verb at all.
+        result = validate_rewrite(
+            ORIGINAL, "Led a team building React and TypeScript full-stack features.", ALLOWED_FACTS,
+        )
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("led" in reason for reason in result.reasons))
+
+    def test_supported_leadership_verb_with_invented_team_size_is_still_rejected(self):
+        original = ORIGINAL + " Served as founding engineer, owning engineering across frontend and backend."
+        result = validate_rewrite(original, "Owned a team of 12 engineers.", ALLOWED_FACTS)
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("numeric" in reason and "12" in reason for reason in result.reasons))
+
+    def test_supported_leadership_verb_with_invented_broader_scope_is_still_rejected(self):
+        original = "Architected a workflow for onboarding using React."
+        result = validate_rewrite(original, "Architected company-wide infrastructure for onboarding using React.", ["React"])
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("scope" in reason and "company-wide" in reason for reason in result.reasons))
+
+    def test_different_leadership_family_is_not_conflated(self):
+        # Evidence supports "owning" (family: own) -- a rewrite claiming
+        # "mentored" (family: mentor) is a genuinely different concept and
+        # must still be rejected, not treated as a synonym.
+        original = ORIGINAL + " Owned the delivery pipeline."
+        result = validate_rewrite(original, "Mentored the team on React and TypeScript.", ALLOWED_FACTS)
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("mentored" in reason for reason in result.reasons))
+
+
 class ConservativeAcceptanceTest(unittest.TestCase):
     def test_empty_rewrite_is_rejected(self):
         result = validate_rewrite(ORIGINAL, "   ", ALLOWED_FACTS)

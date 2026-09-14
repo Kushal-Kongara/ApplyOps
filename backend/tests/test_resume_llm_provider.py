@@ -98,6 +98,15 @@ class OllamaProviderStatusTest(unittest.TestCase):
         self.assertFalse(status.reachable)
         self.assertIn("time", status.error.lower())
 
+    def test_connection_reset_is_reported_as_unreachable(self):
+        def reset(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadError("Connection reset by peer", request=request)
+
+        provider = OllamaResumeProvider(client=_client(reset))
+        status = provider.status()
+        self.assertFalse(status.reachable)
+        self.assertIsNotNone(status.error)
+
     def test_http_error_status_is_reported_as_unreachable(self):
         def server_error(request: httpx.Request) -> httpx.Response:
             return httpx.Response(500, request=request)
@@ -129,6 +138,18 @@ class OllamaProviderGenerateRewriteTest(unittest.TestCase):
             raise httpx.ReadTimeout("slow", request=request)
 
         provider = OllamaResumeProvider(client=_client(slow))
+        with self.assertRaises(ResumeLLMProviderError):
+            provider.generate_rewrite(SAMPLE_REQUEST)
+
+    def test_connection_reset_mid_response_raises_provider_error(self):
+        # A connection dropping mid-response (httpx.ReadError, e.g. "Connection
+        # reset by peer") is neither a ConnectError nor a TimeoutException --
+        # this must still become a clean ResumeLLMProviderError, not an
+        # unhandled httpx exception.
+        def reset(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadError("Connection reset by peer", request=request)
+
+        provider = OllamaResumeProvider(client=_client(reset))
         with self.assertRaises(ResumeLLMProviderError):
             provider.generate_rewrite(SAMPLE_REQUEST)
 

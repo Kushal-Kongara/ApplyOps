@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { buildJobsQueryString, generateResume, parseErrorDetail, resumePdfUrl } from './api'
+import {
+  addApplicationQuestion,
+  buildJobsQueryString,
+  createApplicationPreparation,
+  generateResume,
+  parseErrorDetail,
+  resumePdfUrl,
+  updateApplicationAnswer,
+} from './api'
 
 describe('buildJobsQueryString', () => {
   it('returns an empty string for no filters', () => {
@@ -89,5 +97,53 @@ describe('parseErrorDetail', () => {
     expect(parseErrorDetail(null, 500)).toEqual({ message: 'Request failed (500)' })
     expect(parseErrorDetail(undefined, 500)).toEqual({ message: 'Request failed (500)' })
     expect(parseErrorDetail({ unexpected: true }, 500)).toEqual({ message: 'Request failed (500)' })
+  })
+})
+
+describe('application preparation API construction', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubFetch() {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('createApplicationPreparation posts an empty body when no resume version is given', async () => {
+    const fetchMock = stubFetch()
+    await createApplicationPreparation('greenhouse:acme:1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/jobs/greenhouse%3Aacme%3A1/application-preparations')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({})
+  })
+
+  it('createApplicationPreparation includes an explicit resume version', async () => {
+    const fetchMock = stubFetch()
+    await createApplicationPreparation('greenhouse:acme:1', 5)
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init.body)).toEqual({ resume_version_id: 5 })
+  })
+
+  it('addApplicationQuestion sends the full question payload', async () => {
+    const fetchMock = stubFetch()
+    await addApplicationQuestion(3, { question_text: 'Why this role?', question_type: 'textarea', category: 'role_motivation' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/application-preparations/3/questions')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({
+      question_text: 'Why this role?', question_type: 'textarea', category: 'role_motivation',
+    })
+  })
+
+  it('updateApplicationAnswer sends only the answer field', async () => {
+    const fetchMock = stubFetch()
+    await updateApplicationAnswer(7, 'My edited answer')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/application-answers/7')
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(init.body)).toEqual({ answer: 'My edited answer' })
   })
 })

@@ -4,6 +4,10 @@
 // validation duplicated from the backend.
 
 import type {
+  AddQuestionPayload,
+  ApplicationAnswer,
+  ApplicationPreparationDetail,
+  ApplicationPreparationSummary,
   ApplicationRecord,
   ApplicationUpdatePayload,
   DashboardResponse,
@@ -160,4 +164,58 @@ export function approveResume(resumeId: number): Promise<ResumeVersionDetail> {
  * and for the "Download PDF" link, never fetched and re-wrapped here. */
 export function resumePdfUrl(resumeId: number): string {
   return `/api/resumes/${resumeId}/pdf`
+}
+
+// --- application preparation -----------------------------------------------
+//
+// Preparing an application is always explicit — nothing here is ever
+// called automatically. Generation never submits anything externally or
+// marks a job "applied."
+
+export function createApplicationPreparation(
+  jobId: string,
+  resumeVersionId?: number,
+): Promise<ApplicationPreparationDetail> {
+  return request<ApplicationPreparationDetail>(`/api/jobs/${encodeURIComponent(jobId)}/application-preparations`, {
+    method: 'POST',
+    body: JSON.stringify(resumeVersionId !== undefined ? { resume_version_id: resumeVersionId } : {}),
+  })
+}
+
+export function listApplicationPreparations(jobId: string): Promise<ApplicationPreparationSummary[]> {
+  return request<ApplicationPreparationSummary[]>(`/api/jobs/${encodeURIComponent(jobId)}/application-preparations`)
+}
+
+export function getApplicationPreparation(preparationId: number): Promise<ApplicationPreparationDetail> {
+  return request<ApplicationPreparationDetail>(`/api/application-preparations/${preparationId}`)
+}
+
+export function updateApplicationPreparation(
+  preparationId: number,
+  payload: { resume_version_id?: number | null; status?: string },
+): Promise<ApplicationPreparationDetail> {
+  return request<ApplicationPreparationDetail>(`/api/application-preparations/${preparationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function generateApplicationPreparation(preparationId: number): Promise<ApplicationPreparationDetail> {
+  return request<ApplicationPreparationDetail>(`/api/application-preparations/${preparationId}/generate`, {
+    method: 'POST',
+  })
+}
+
+export function addApplicationQuestion(preparationId: number, payload: AddQuestionPayload): Promise<ApplicationAnswer> {
+  return request<ApplicationAnswer>(`/api/application-preparations/${preparationId}/questions`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateApplicationAnswer(answerId: number, answer: string): Promise<ApplicationAnswer> {
+  return request<ApplicationAnswer>(`/api/application-answers/${answerId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ answer }),
+  })
 }

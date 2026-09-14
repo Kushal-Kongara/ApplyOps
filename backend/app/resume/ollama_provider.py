@@ -11,6 +11,8 @@ import time
 import httpx
 
 from app.resume.llm_provider import (
+    AnswerRequest,
+    AnswerResponse,
     ProviderStatus,
     RewriteRequest,
     RewriteResponse,
@@ -78,8 +80,12 @@ class OllamaResumeProvider(ResumeLLMProvider):
 
         raise last_error  # pragma: no cover - unreachable, loop always returns or raises
 
-    def generate_rewrite(self, request: RewriteRequest) -> RewriteResponse:
-        prompt = build_rewrite_prompt(request)
+    def _generate_json_response(self, prompt: str) -> str:
+        """POST one non-streaming `/api/generate` call and return the raw
+        text Ollama put in `response`. Shared by `generate_rewrite` and
+        `generate_answer` — same endpoint, same JSON-forcing options, same
+        error handling; only the prompt (and how the caller parses the
+        returned text) differs."""
         try:
             response = self._request(
                 "POST",
@@ -104,6 +110,13 @@ class OllamaResumeProvider(ResumeLLMProvider):
             raise ResumeLLMProviderError("Could not connect to the configured Ollama server.") from exc
         except httpx.TimeoutException as exc:
             raise ResumeLLMProviderError("Ollama did not respond in time.") from exc
+        except httpx.TransportError as exc:
+            # Broader than ConnectError/TimeoutException -- covers a
+            # connection dropping mid-response (e.g. "Connection reset by
+            # peer"), which is neither a connect failure nor a timeout but
+            # is exactly as transient and exactly as much "no rewrite,"
+            # never a reason to invent one.
+            raise ResumeLLMProviderError("The connection to Ollama was interrupted.") from exc
         except httpx.HTTPStatusError as exc:
             raise ResumeLLMProviderError(f"Ollama returned an error (HTTP {exc.response.status_code}).") from exc
 
@@ -115,13 +128,27 @@ class OllamaResumeProvider(ResumeLLMProvider):
         raw_text = body.get("response") if isinstance(body, dict) else None
         if not isinstance(raw_text, str) or not raw_text.strip():
             raise ResumeLLMProviderError("Ollama's response did not include a 'response' field.")
+        return raw_text
 
+    def generate_rewrite(self, request: RewriteRequest) -> RewriteResponse:
+        raw_text = self._generate_json_response(build_rewrite_prompt(request))
         try:
             rewritten_bullet, claims_used = parse_rewrite_response(raw_text)
         except ValueError as exc:
             raise ResumeLLMProviderError(f"Ollama's rewrite output was malformed: {exc}") from exc
 
         return RewriteResponse(rewritten_bullet=rewritten_bullet, claims_used=claims_used)
+
+    def generate_answer(self, request: AnswerRequest) -> AnswerResponse:
+        from app.application_prep.prompt import build_answer_prompt, parse_answer_response
+
+        raw_text = self._generate_json_response(build_answer_prompt(request))
+        try:
+            answer_text, claims_used = parse_answer_response(raw_text)
+        except ValueError as exc:
+            raise ResumeLLMProviderError(f"Ollama's answer output was malformed: {exc}") from exc
+
+        return AnswerResponse(answer_text=answer_text, claims_used=claims_used)
 
     def status(self) -> ProviderStatus:
         try:
@@ -136,6 +163,11 @@ class OllamaResumeProvider(ResumeLLMProvider):
             return ProviderStatus(
                 provider=self.name, configured=True, reachable=False, model=self._model,
                 error="Ollama did not respond in time.",
+            )
+        except httpx.TransportError:
+            return ProviderStatus(
+                provider=self.name, configured=True, reachable=False, model=self._model,
+                error="The connection to Ollama was interrupted.",
             )
         except httpx.HTTPStatusError as exc:
             return ProviderStatus(

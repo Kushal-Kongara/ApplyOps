@@ -202,3 +202,55 @@ export interface LLMStatus {
   error: string | null
   available_models: string[] | null
 }
+
+// --- application preparation ---------------------------------------------
+
+export type QuestionType = 'text' | 'textarea' | 'number' | 'boolean' | 'single_select' | 'multi_select' | 'date'
+
+export type QuestionCategory =
+  | 'identity' | 'contact' | 'work_authorization' | 'sponsorship' | 'location' | 'relocation'
+  | 'availability' | 'salary' | 'education' | 'experience' | 'skills'
+  | 'company_motivation' | 'role_motivation' | 'behavioral' | 'demographic_optional' | 'other'
+
+export type AnswerSource =
+  | 'applicant_profile' | 'master_resume' | 'approved_resume'
+  | 'generated_from_evidence' | 'user_input_required' | 'user_edited'
+
+export type PreparationStatus = 'draft' | 'needs_input' | 'ready' | 'used'
+
+export interface ApplicationAnswer {
+  id: number
+  preparation_id: number
+  question_id: string
+  question_text: string
+  question_type: QuestionType
+  category: QuestionCategory
+  required: boolean
+  answer: string | null
+  answer_source: AnswerSource
+  needs_user_input: boolean
+  evidence_ids: string[]
+  user_edited: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface ApplicationPreparationSummary {
+  id: number
+  job_unique_key: string
+  resume_version_id: number | null
+  status: PreparationStatus
+  created_at: string
+  updated_at: string
+}
+
+export interface ApplicationPreparationDetail extends ApplicationPreparationSummary {
+  answers: ApplicationAnswer[]
+}
+
+export interface AddQuestionPayload {
+  question_text: string
+  question_type: QuestionType
+  category: QuestionCategory
+  required?: boolean
+}

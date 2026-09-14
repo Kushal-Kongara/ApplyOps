@@ -161,6 +161,48 @@ CREATE TABLE IF NOT EXISTS resume_versions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_resume_versions_job ON resume_versions (job_unique_key, version DESC);
+
+-- One row per application-preparation attempt for one job. Deliberately
+-- holds only a reference to the resume version used (never a copy of its
+-- content) and no copy of the job/JD -- both are already fully available
+-- via `job_unique_key`/`resume_version_id`.
+CREATE TABLE IF NOT EXISTS application_preparations (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_unique_key    TEXT    NOT NULL,
+    resume_version_id INTEGER,
+    status            TEXT    NOT NULL DEFAULT 'draft'
+                      CHECK (status IN ('draft', 'needs_input', 'ready', 'used')),
+    created_at        TEXT    NOT NULL,
+    updated_at        TEXT    NOT NULL,
+    FOREIGN KEY (job_unique_key) REFERENCES jobs (unique_key),
+    FOREIGN KEY (resume_version_id) REFERENCES resume_versions (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_application_preparations_job ON application_preparations (job_unique_key, id DESC);
+
+-- One row per question in a preparation -- both the default standard
+-- packet and any manually-added custom question. `user_edited` is set the
+-- moment a human edits `answer` directly, and regeneration must never
+-- silently overwrite a row with that flag set.
+CREATE TABLE IF NOT EXISTS application_answers (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    preparation_id   INTEGER NOT NULL,
+    question_id      TEXT    NOT NULL DEFAULT '',
+    question_text    TEXT    NOT NULL,
+    question_type    TEXT    NOT NULL,
+    category         TEXT    NOT NULL,
+    required         INTEGER NOT NULL DEFAULT 1,
+    answer           TEXT,
+    answer_source    TEXT    NOT NULL DEFAULT 'user_input_required',
+    needs_user_input INTEGER NOT NULL DEFAULT 1,
+    evidence_ids     TEXT    NOT NULL DEFAULT '[]',
+    user_edited      INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL,
+    FOREIGN KEY (preparation_id) REFERENCES application_preparations (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_application_answers_preparation ON application_answers (preparation_id, id);
 """
 
 _JOB_COLUMNS = (
@@ -1186,3 +1228,158 @@ def approve_resume_version(
     )
     connection.commit()
     return get_resume_version(connection, resume_id)
+
+
+# --- application_preparations / application_answers --------------------
+#
+# One preparation per job attempt; one answer row per question in it (the
+# default standard packet plus any manually-added custom question). No
+# copy of the job/JD/resume content lives here -- only references
+# (`job_unique_key`, `resume_version_id`).
+
+_UNSET_ANSWER = object()
+
+
+def create_application_preparation(
+    connection: sqlite3.Connection,
+    job_unique_key: str,
+    resume_version_id: int | None = None,
+    status: str = "draft",
+    now: datetime | None = None,
+) -> int:
+    now = now or utcnow()
+    cursor = connection.execute(
+        """
+        INSERT INTO application_preparations (job_unique_key, resume_version_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (job_unique_key, resume_version_id, status, _to_iso(now), _to_iso(now)),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def get_application_preparation(connection: sqlite3.Connection, preparation_id: int) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT * FROM application_preparations WHERE id = ?", (preparation_id,)
+    ).fetchone()
+
+
+def list_application_preparations(connection: sqlite3.Connection, job_unique_key: str) -> list[sqlite3.Row]:
+    """Every preparation attempt for one job, newest first. Never filtered
+    out -- a prior attempt stays visible even after a newer one exists."""
+    return connection.execute(
+        "SELECT * FROM application_preparations WHERE job_unique_key = ? ORDER BY id DESC",
+        (job_unique_key,),
+    ).fetchall()
+
+
+def update_application_preparation(
+    connection: sqlite3.Connection,
+    preparation_id: int,
+    *,
+    status: str | None = None,
+    resume_version_id: int | object = _UNSET_ANSWER,
+    now: datetime | None = None,
+) -> sqlite3.Row | None:
+    """Update only the fields actually passed -- `status` and
+    `resume_version_id` both default to "leave unchanged"."""
+    existing = get_application_preparation(connection, preparation_id)
+    if existing is None:
+        return None
+
+    now = now or utcnow()
+    new_status = status if status is not None else existing["status"]
+    new_resume_version_id = existing["resume_version_id"] if resume_version_id is _UNSET_ANSWER else resume_version_id
+
+    connection.execute(
+        """
+        UPDATE application_preparations
+           SET status = ?, resume_version_id = ?, updated_at = ?
+         WHERE id = ?
+        """,
+        (new_status, new_resume_version_id, _to_iso(now), preparation_id),
+    )
+    connection.commit()
+    return get_application_preparation(connection, preparation_id)
+
+
+def insert_application_answer(
+    connection: sqlite3.Connection,
+    *,
+    preparation_id: int,
+    question_id: str,
+    question_text: str,
+    question_type: str,
+    category: str,
+    required: bool,
+    answer: str | None,
+    answer_source: str,
+    needs_user_input: bool,
+    evidence_ids: list[str],
+    user_edited: bool = False,
+    now: datetime | None = None,
+) -> int:
+    now = now or utcnow()
+    cursor = connection.execute(
+        """
+        INSERT INTO application_answers (
+            preparation_id, question_id, question_text, question_type, category, required,
+            answer, answer_source, needs_user_input, evidence_ids, user_edited, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            preparation_id, question_id, question_text, question_type, category, int(required),
+            answer, answer_source, int(needs_user_input), json.dumps(evidence_ids), int(user_edited),
+            _to_iso(now), _to_iso(now),
+        ),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def get_application_answer(connection: sqlite3.Connection, answer_id: int) -> sqlite3.Row | None:
+    return connection.execute("SELECT * FROM application_answers WHERE id = ?", (answer_id,)).fetchone()
+
+
+def list_application_answers(connection: sqlite3.Connection, preparation_id: int) -> list[sqlite3.Row]:
+    return connection.execute(
+        "SELECT * FROM application_answers WHERE preparation_id = ? ORDER BY id", (preparation_id,)
+    ).fetchall()
+
+
+def update_application_answer(
+    connection: sqlite3.Connection,
+    answer_id: int,
+    *,
+    answer: str | object = _UNSET_ANSWER,
+    answer_source: str | None = None,
+    needs_user_input: bool | None = None,
+    evidence_ids: list[str] | None = None,
+    user_edited: bool | None = None,
+    now: datetime | None = None,
+) -> sqlite3.Row | None:
+    """Update only the fields actually passed. A human edit should call
+    this with `answer=...` and `user_edited=True`; regeneration should
+    check `user_edited` first and skip any row where it's already set."""
+    existing = get_application_answer(connection, answer_id)
+    if existing is None:
+        return None
+
+    now = now or utcnow()
+    new_answer = existing["answer"] if answer is _UNSET_ANSWER else answer
+    new_source = answer_source if answer_source is not None else existing["answer_source"]
+    new_needs_input = int(needs_user_input) if needs_user_input is not None else existing["needs_user_input"]
+    new_evidence_ids = json.dumps(evidence_ids) if evidence_ids is not None else existing["evidence_ids"]
+    new_user_edited = int(user_edited) if user_edited is not None else existing["user_edited"]
+
+    connection.execute(
+        """
+        UPDATE application_answers
+           SET answer = ?, answer_source = ?, needs_user_input = ?, evidence_ids = ?, user_edited = ?, updated_at = ?
+         WHERE id = ?
+        """,
+        (new_answer, new_source, new_needs_input, new_evidence_ids, new_user_edited, _to_iso(now), answer_id),
+    )
+    connection.commit()
+    return get_application_answer(connection, answer_id)

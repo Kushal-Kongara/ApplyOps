@@ -232,3 +232,38 @@ def make_match_kwargs(**overrides: Any) -> dict[str, Any]:
     )
     fields.update(overrides)
     return fields
+
+
+def make_applicant_profile_dict(**overrides: Any) -> dict[str, Any]:
+    """A minimal, valid `applicant_profile.json` payload for application-prep
+    tests. Fictional data only — never anything from a real candidate."""
+    fields: dict[str, Any] = {
+        "identity": {
+            "full_name": "Test Candidate",
+            "email": "test@example.com",
+            "phone": "+1 (555) 000-0000",
+            "location": "Remote",
+        },
+        "links": {
+            "linkedin": "https://linkedin.com/in/test-candidate",
+            "github": "https://github.com/test-candidate",
+            "portfolio": "",
+        },
+        "work_authorization": {
+            "authorized_to_work": True,
+            "requires_sponsorship_now": False,
+            "requires_sponsorship_future": False,
+            "status_label": "Authorized to work",
+        },
+        "preferences": {
+            "relocation": "Open to relocation",
+            "remote": "Open to remote",
+            "start_availability": "Two weeks notice",
+            "salary_expectation": {"mode": "user_input"},
+        },
+        "education": [{"school": "Test University", "degree": "B.S. Computer Science", "graduation_year": "2020"}],
+        "demographic_response_policy": None,
+        "custom_facts": {},
+    }
+    fields.update(overrides)
+    return fields

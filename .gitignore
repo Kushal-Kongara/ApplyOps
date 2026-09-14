@@ -21,6 +21,7 @@ backend/data/
 backend/config/sources.json
 backend/config/profile.json
 backend/config/resume_master.json
+backend/config/applicant_profile.json
 
 # Generated resume artifacts (LaTeX/PDF output, never committed)
 backend/data/resumes/

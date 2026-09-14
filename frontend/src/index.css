@@ -906,3 +906,147 @@ input:disabled {
   margin-top: 3px;
   font-style: italic;
 }
+
+/* ---------- application preparation ---------- */
+
+.app-prep--empty {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+}
+
+.app-prep--empty p {
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.app-prep__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.app-prep__status {
+  font-weight: 700;
+  text-transform: capitalize;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.app-prep__status--ready {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+.app-prep__status--needs_input {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
+.app-prep__status--draft {
+  color: var(--text-muted);
+}
+
+.app-prep__ready-count {
+  color: var(--text-muted);
+}
+
+.app-prep__header-actions {
+  margin-left: auto;
+}
+
+.app-resume-badge {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.app-question {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.app-question:last-child {
+  border-bottom: none;
+}
+
+.app-question__text {
+  font-weight: 600;
+  font-size: 13.5px;
+  margin-bottom: 6px;
+}
+
+.app-question--needs-input .app-question__text {
+  color: var(--warn);
+}
+
+.app-question__optional {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.app-question__answer {
+  margin: 0 0 4px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.app-question__hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+
+.app-question__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.app-question__source {
+  color: var(--text-faint);
+}
+
+.app-question__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.app-question__edit textarea,
+.app-question__edit input {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.app-question__edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.app-add-question {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.app-add-question input[type='text'] {
+  flex: 1;
+  min-width: 220px;
+}
+
+.app-add-question__actions {
+  display: flex;
+  gap: 8px;
+}

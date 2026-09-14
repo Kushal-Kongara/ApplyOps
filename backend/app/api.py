@@ -26,6 +26,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from app import applications, database, recent
+from app.application_prep import service as application_prep_service
+from app.application_prep.models import PREPARATION_STATUSES, QUESTION_CATEGORIES, QUESTION_TYPES
+from app.application_prep.profile import DEFAULT_APPLICANT_PROFILE_PATH, ApplicantProfileError
+from app.application_prep.service import NoApprovedResumeError
 from app.applications import ApplicationError, parse_datetime_arg, validate_status
 from app.profile import Profile, ProfileError, load_profile
 from app.resume import service as resume_service
@@ -40,6 +44,7 @@ DB_PATH = Path(os.environ.get("APPLYOPS_DB_PATH", str(database.DEFAULT_DB_PATH))
 PROFILE_PATH = Path(os.environ.get("APPLYOPS_PROFILE_PATH", "config/profile.json"))
 MASTER_RESUME_PATH = Path(os.environ.get("APPLYOPS_MASTER_RESUME_PATH", str(DEFAULT_MASTER_RESUME_PATH)))
 RESUMES_ROOT = Path(os.environ.get("APPLYOPS_RESUMES_ROOT", str(DEFAULT_RESUMES_ROOT)))
+APPLICANT_PROFILE_PATH = Path(os.environ.get("APPLYOPS_APPLICANT_PROFILE_PATH", str(DEFAULT_APPLICANT_PROFILE_PATH)))
 
 # Vite's default dev server ports. This is a local, single-user tool with
 # no auth of its own — CORS is opened only to these known local origins,
@@ -664,5 +669,238 @@ def approve_resume(
     _require_resume(connection, resume_id)
     row = database.approve_resume_version(connection, resume_id)
     return _resume_version_detail(row)
+
+
+# --- application preparation ---------------------------------------------
+#
+# Job + approved resume + local applicant facts -> a reviewed set of
+# answers. Every write here goes through `app.application_prep.service`/
+# `app.database` — this module only turns rows into JSON and maps error
+# states onto HTTP status codes. Nothing here ever submits an application,
+# marks a job "applied," or contacts anything external.
+
+
+class ApplicationAnswerResponse(BaseModel):
+    id: int
+    preparation_id: int
+    question_id: str
+    question_text: str
+    question_type: str
+    category: str
+    required: bool
+    answer: str | None
+    answer_source: str
+    needs_user_input: bool
+    evidence_ids: list[str]
+    user_edited: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicationPreparationSummary(BaseModel):
+    id: int
+    job_unique_key: str
+    resume_version_id: int | None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicationPreparationDetail(ApplicationPreparationSummary):
+    answers: list[ApplicationAnswerResponse]
+
+
+class CreatePreparationRequest(BaseModel):
+    resume_version_id: int | None = None
+
+
+class UpdatePreparationRequest(BaseModel):
+    resume_version_id: int | None = None
+    status: str | None = None
+
+
+class AddQuestionRequest(BaseModel):
+    question_text: str
+    question_type: str
+    category: str
+    required: bool = True
+
+
+class UpdateAnswerRequest(BaseModel):
+    """Editing an answer always marks it `user_edited` -- regeneration
+    skips any row with that flag set, so an edit is never silently
+    overwritten."""
+
+    answer: str
+
+
+def _answer_response(row: sqlite3.Row) -> ApplicationAnswerResponse:
+    return ApplicationAnswerResponse(
+        id=row["id"], preparation_id=row["preparation_id"], question_id=row["question_id"],
+        question_text=row["question_text"], question_type=row["question_type"], category=row["category"],
+        required=bool(row["required"]), answer=row["answer"], answer_source=row["answer_source"],
+        needs_user_input=bool(row["needs_user_input"]), evidence_ids=json.loads(row["evidence_ids"]),
+        user_edited=bool(row["user_edited"]), created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def _preparation_summary(row: sqlite3.Row) -> ApplicationPreparationSummary:
+    return ApplicationPreparationSummary(
+        id=row["id"], job_unique_key=row["job_unique_key"], resume_version_id=row["resume_version_id"],
+        status=row["status"], created_at=row["created_at"], updated_at=row["updated_at"],
+    )
+
+
+def _preparation_detail(connection: sqlite3.Connection, row: sqlite3.Row) -> ApplicationPreparationDetail:
+    answers = database.list_application_answers(connection, row["id"])
+    return ApplicationPreparationDetail(
+        **_preparation_summary(row).model_dump(), answers=[_answer_response(a) for a in answers],
+    )
+
+
+def _require_preparation(connection: sqlite3.Connection, preparation_id: int) -> sqlite3.Row:
+    row = database.get_application_preparation(connection, preparation_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "preparation_not_found", "message": f"No application preparation found with id {preparation_id}."},
+        )
+    return row
+
+
+@app.post("/api/jobs/{job_id}/application-preparations", response_model=ApplicationPreparationDetail, status_code=201)
+def create_application_preparation(
+    job_id: str,
+    payload: CreatePreparationRequest | None = None,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ApplicationPreparationDetail:
+    """Create a new preparation with the default question packet as
+    unresolved placeholders. Prefers the job's approved resume version --
+    409s with `no_approved_resume` if none exists and none was passed
+    explicitly, rather than silently picking a draft.
+    """
+    job_row = _require_job(connection, job_id)
+    resume_version_id = payload.resume_version_id if payload is not None else None
+    try:
+        row = application_prep_service.create_preparation(connection, job_row, resume_version_id=resume_version_id)
+    except NoApprovedResumeError as exc:
+        raise HTTPException(status_code=409, detail={"error": "no_approved_resume", "message": str(exc)}) from exc
+    return _preparation_detail(connection, row)
+
+
+@app.get("/api/jobs/{job_id}/application-preparations", response_model=list[ApplicationPreparationSummary])
+def list_application_preparations(
+    job_id: str, connection: sqlite3.Connection = Depends(get_connection),
+) -> list[ApplicationPreparationSummary]:
+    """Every preparation attempt for this job, newest first."""
+    _require_job(connection, job_id)
+    rows = database.list_application_preparations(connection, job_id)
+    return [_preparation_summary(row) for row in rows]
+
+
+@app.get("/api/application-preparations/{preparation_id}", response_model=ApplicationPreparationDetail)
+def get_application_preparation(
+    preparation_id: int, connection: sqlite3.Connection = Depends(get_connection),
+) -> ApplicationPreparationDetail:
+    row = _require_preparation(connection, preparation_id)
+    return _preparation_detail(connection, row)
+
+
+@app.patch("/api/application-preparations/{preparation_id}", response_model=ApplicationPreparationDetail)
+def update_application_preparation(
+    preparation_id: int,
+    payload: UpdatePreparationRequest,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ApplicationPreparationDetail:
+    """Change which resume version this preparation uses, or set its
+    status manually. Only fields actually present in the request body are
+    updated."""
+    _require_preparation(connection, preparation_id)
+    provided = payload.model_dump(exclude_unset=True)
+
+    if "status" in provided and provided["status"] not in PREPARATION_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_status", "message": f"Unsupported status '{provided['status']}'. Supported: {', '.join(PREPARATION_STATUSES)}."},
+        )
+
+    kwargs = {}
+    if "resume_version_id" in provided:
+        kwargs["resume_version_id"] = provided["resume_version_id"]
+    if "status" in provided:
+        kwargs["status"] = provided["status"]
+
+    row = database.update_application_preparation(connection, preparation_id, **kwargs)
+    return _preparation_detail(connection, row)
+
+
+@app.post("/api/application-preparations/{preparation_id}/questions", response_model=ApplicationAnswerResponse, status_code=201)
+def add_application_question(
+    preparation_id: int,
+    payload: AddQuestionRequest,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ApplicationAnswerResponse:
+    """Add one manually-specified question as an unresolved placeholder --
+    the next `.../generate` call resolves it exactly like a default-packet
+    question, dispatched by `category`."""
+    _require_preparation(connection, preparation_id)
+    if payload.question_type not in QUESTION_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_question_type", "message": f"Unsupported question_type '{payload.question_type}'."},
+        )
+    if payload.category not in QUESTION_CATEGORIES:
+        raise HTTPException(
+            status_code=400, detail={"error": "invalid_category", "message": f"Unsupported category '{payload.category}'."},
+        )
+    row = application_prep_service.add_custom_question(
+        connection, preparation_id, payload.question_text, payload.question_type, payload.category, payload.required,
+    )
+    return _answer_response(row)
+
+
+@app.patch("/api/application-answers/{answer_id}", response_model=ApplicationAnswerResponse)
+def update_application_answer(
+    answer_id: int,
+    payload: UpdateAnswerRequest,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> ApplicationAnswerResponse:
+    """A human-edited answer -- always marks `user_edited`, so a later
+    `.../generate` call never silently overwrites it."""
+    existing = database.get_application_answer(connection, answer_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=404, detail={"error": "answer_not_found", "message": f"No application answer found with id {answer_id}."},
+        )
+    row = database.update_application_answer(
+        connection, answer_id, answer=payload.answer, answer_source="user_edited",
+        needs_user_input=False, user_edited=True,
+    )
+    application_prep_service.recompute_status(connection, existing["preparation_id"])
+    return _answer_response(database.get_application_answer(connection, answer_id))
+
+
+@app.post("/api/application-preparations/{preparation_id}/generate", response_model=ApplicationPreparationDetail)
+def generate_application_preparation(
+    preparation_id: int, connection: sqlite3.Connection = Depends(get_connection),
+) -> ApplicationPreparationDetail:
+    """Resolve every not-yet-user-edited answer -- deterministically from
+    the applicant profile/master resume where possible, generated from
+    evidence via the configured LLM provider otherwise. Never submits or
+    marks the job applied; an unreachable/unconfigured LLM provider only
+    means open-ended questions become `needs_user_input`, never a failure
+    of the whole preparation.
+    """
+    _require_preparation(connection, preparation_id)
+    try:
+        row = application_prep_service.generate_preparation(
+            connection, preparation_id,
+            applicant_profile_path=APPLICANT_PROFILE_PATH, master_resume_path=MASTER_RESUME_PATH,
+        )
+    except ApplicantProfileError as exc:
+        raise HTTPException(status_code=409, detail={"error": "applicant_profile_missing", "message": str(exc)}) from exc
+    except MasterResumeError as exc:
+        raise HTTPException(status_code=409, detail={"error": "master_resume_missing", "message": str(exc)}) from exc
+    return _preparation_detail(connection, row)
 
 

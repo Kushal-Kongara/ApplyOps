@@ -26,18 +26,43 @@ _DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Leadership/ownership/scope verbs a bullet can only claim if the original
-# evidence already uses that same word — never inferred from context.
-_LEADERSHIP_TERMS = (
-    "led", "lead", "leads", "leading",
-    "managed", "manages", "managing", "management",
-    "architected", "architecting",
-    "mentored", "mentors", "mentoring",
-    "supervised", "supervising",
-    "directed", "directing",
-    "spearheaded", "spearheading",
-    "owned", "owns", "owning",
-    "founded", "founding",
+# Leadership/ownership verbs a bullet can only claim if the original
+# evidence already uses that same *concept* — never inferred from context.
+# Grouped into canonical families so a harmless grammatical variant of an
+# already-supported claim ("owning" in evidence, "owned" in a rewrite)
+# passes, while a genuinely different leadership concept ("led" where
+# evidence only ever says "owned") still doesn't. This is deliberately a
+# small, fixed, hand-maintained set of conjugations for exactly the verbs
+# this validator already cares about — not a general stemmer, which would
+# risk conflating unrelated words this file was never meant to reason about.
+_LEADERSHIP_FAMILIES: dict[str, tuple[str, ...]] = {
+    "own": ("own", "owns", "owned", "owning"),
+    "lead": ("lead", "leads", "led", "leading"),
+    "manage": ("manage", "manages", "managed", "managing", "management"),
+    "mentor": ("mentor", "mentors", "mentored", "mentoring"),
+    "supervise": ("supervise", "supervises", "supervised", "supervising"),
+    "direct": ("direct", "directs", "directed", "directing"),
+    "spearhead": ("spearhead", "spearheads", "spearheaded", "spearheading"),
+    "architect": ("architect", "architects", "architected", "architecting"),
+    "found": ("found", "founds", "founded", "founding"),
+}
+_WORD_TO_LEADERSHIP_FAMILY: dict[str, str] = {
+    word: family for family, words in _LEADERSHIP_FAMILIES.items() for word in words
+}
+
+# Scope/scale phrases a rewrite can only claim if already present in the
+# evidence — canonicalizing "owned" == "owning" must never be read as
+# license to also widen *scope*: "architected a workflow" does not support
+# "architected company-wide infrastructure." Checked as fixed phrases
+# (like duration claims), not word-by-word, since these are multi-word
+# scale descriptors, not verb conjugations.
+_SCOPE_SCALE_PHRASES = (
+    "company-wide", "company wide", "companywide",
+    "org-wide", "org wide", "orgwide",
+    "organization-wide", "organization wide", "organizationwide",
+    "enterprise-wide", "enterprise wide", "enterprisewide",
+    "team-wide", "team wide", "teamwide",
+    "globally", "across the company", "across the organization",
 )
 
 # A rewrite may reasonably drop facts the original bullet mentions but the
@@ -55,11 +80,11 @@ class ValidationResult:
     reasons: list[str] = field(default_factory=list)
 
 
-def _normalized_words(text: str) -> set[str]:
+def normalized_words(text: str) -> set[str]:
     return set(normalize_text(text).split())
 
 
-def _check_technology_claims(
+def check_technology_claims(
     original_normalized: str, rewritten_normalized: str, allowed_normalized: set[str], vocabulary: dict[str, list[str]],
 ) -> list[str]:
     reasons = []
@@ -74,7 +99,7 @@ def _check_technology_claims(
     return reasons
 
 
-def _check_numeric_claims(original_text: str, rewritten_text: str) -> list[str]:
+def check_numeric_claims(original_text: str, rewritten_text: str) -> list[str]:
     reasons = []
     original_numbers = set(_NUMBER_RE.findall(original_text))
     for match in _NUMBER_RE.finditer(rewritten_text):
@@ -84,7 +109,7 @@ def _check_numeric_claims(original_text: str, rewritten_text: str) -> list[str]:
     return reasons
 
 
-def _check_duration_claims(original_text: str, rewritten_text: str) -> list[str]:
+def check_duration_claims(original_text: str, rewritten_text: str) -> list[str]:
     reasons = []
     original_normalized = normalize_text(original_text)
     for match in _DURATION_RE.finditer(rewritten_text):
@@ -94,11 +119,39 @@ def _check_duration_claims(original_text: str, rewritten_text: str) -> list[str]
     return reasons
 
 
-def _check_leadership_claims(original_words: set[str], rewritten_words: set[str]) -> list[str]:
+def check_leadership_claims(original_words: set[str], rewritten_words: set[str]) -> list[str]:
+    """Reject a leadership/ownership *concept* (own/lead/manage/mentor/...)
+    that doesn't already appear, in any conjugation, in the original text.
+    A rewrite may freely reconjugate a concept the evidence already
+    supports (evidence "owning", rewrite "owned") -- it just can't
+    introduce a concept that was never there at all."""
+    original_families = {_WORD_TO_LEADERSHIP_FAMILY[w] for w in original_words if w in _WORD_TO_LEADERSHIP_FAMILY}
+    rewritten_families = {_WORD_TO_LEADERSHIP_FAMILY[w] for w in rewritten_words if w in _WORD_TO_LEADERSHIP_FAMILY}
+
     reasons = []
-    for term in _LEADERSHIP_TERMS:
-        if term in rewritten_words and term not in original_words:
-            reasons.append(f'unsupported leadership/scope claim: "{term}"')
+    for family in sorted(rewritten_families - original_families):
+        surface_term = next(w for w in rewritten_words if _WORD_TO_LEADERSHIP_FAMILY.get(w) == family)
+        reasons.append(f'unsupported leadership/scope claim: "{surface_term}"')
+    return reasons
+
+
+def check_scope_claims(original_text: str, rewritten_text: str) -> list[str]:
+    """Reject an unsupported scope/scale claim (e.g. "company-wide") even
+    when the leadership verb it modifies is otherwise legitimately
+    supported -- canonicalizing a verb's conjugation is never license to
+    widen what it was claimed to apply to."""
+    original_normalized = normalize_text(original_text)
+    rewritten_normalized = normalize_text(rewritten_text)
+
+    seen_normalized: set[str] = set()
+    reasons = []
+    for phrase in _SCOPE_SCALE_PHRASES:
+        phrase_normalized = normalize_text(phrase)
+        if not phrase_normalized or phrase_normalized in seen_normalized:
+            continue
+        if phrase_normalized in rewritten_normalized and phrase_normalized not in original_normalized:
+            reasons.append(f'unsupported scope claim: "{phrase}"')
+            seen_normalized.add(phrase_normalized)
     return reasons
 
 
@@ -179,14 +232,15 @@ def validate_rewrite(
     original_normalized = normalize_text(original_text)
     rewritten_normalized = normalize_text(rewritten_text)
     allowed_normalized = {normalize_text(fact) for fact in allowed_facts}
-    original_words = _normalized_words(original_text)
-    rewritten_words = _normalized_words(rewritten_text)
+    original_words = normalized_words(original_text)
+    rewritten_words = normalized_words(rewritten_text)
 
     reasons: list[str] = []
-    reasons += _check_technology_claims(original_normalized, rewritten_normalized, allowed_normalized, vocabulary)
-    reasons += _check_numeric_claims(original_text, rewritten_text)
-    reasons += _check_duration_claims(original_text, rewritten_text)
-    reasons += _check_leadership_claims(original_words, rewritten_words)
+    reasons += check_technology_claims(original_normalized, rewritten_normalized, allowed_normalized, vocabulary)
+    reasons += check_numeric_claims(original_text, rewritten_text)
+    reasons += check_duration_claims(original_text, rewritten_text)
+    reasons += check_leadership_claims(original_words, rewritten_words)
+    reasons += check_scope_claims(original_text, rewritten_text)
     reasons += _check_retention(original_normalized, rewritten_normalized, target_emphasis or [], vocabulary)
 
     return ValidationResult(accepted=len(reasons) == 0, reasons=reasons)
