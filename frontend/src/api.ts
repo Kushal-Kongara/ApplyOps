@@ -11,6 +11,7 @@ import type {
   ApplicationRecord,
   ApplicationUpdatePayload,
   DashboardResponse,
+  FillApplicationResponse,
   FollowUpsResponse,
   JobCard,
   JobDetail,
@@ -217,5 +218,18 @@ export function updateApplicationAnswer(answerId: number, answer: string): Promi
   return request<ApplicationAnswer>(`/api/application-answers/${answerId}`, {
     method: 'PATCH',
     body: JSON.stringify({ answer }),
+  })
+}
+
+// --- ATS form filling -----------------------------------------------------
+//
+// Opens a real, visible browser and fills the application page — never
+// submits. The browser stays open for the user to review and finish by
+// hand; this call only reports what happened.
+
+export function fillApplication(jobId: string, preparationId: number): Promise<FillApplicationResponse> {
+  return request<FillApplicationResponse>(`/api/jobs/${encodeURIComponent(jobId)}/fill-application`, {
+    method: 'POST',
+    body: JSON.stringify({ preparation_id: preparationId }),
   })
 }

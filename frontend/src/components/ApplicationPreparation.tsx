@@ -3,14 +3,22 @@ import {
   ApiError,
   addApplicationQuestion,
   createApplicationPreparation,
+  fillApplication,
   generateApplicationPreparation,
   getApplicationPreparation,
   getResume,
   listApplicationPreparations,
+  updateApplication,
   updateApplicationAnswer,
 } from '../api'
 import { useAsync } from '../hooks/useAsync'
-import type { ApplicationAnswer, ApplicationPreparationDetail, QuestionCategory, QuestionType } from '../types'
+import type {
+  ApplicationAnswer,
+  ApplicationPreparationDetail,
+  FillApplicationResponse,
+  QuestionCategory,
+  QuestionType,
+} from '../types'
 
 interface Props {
   jobId: string
@@ -197,6 +205,91 @@ function ResumeBadge({ resumeVersionId }: { resumeVersionId: number | null }) {
   )
 }
 
+function FillResultSummary({
+  jobId, result, onSubmitted,
+}: {
+  jobId: string
+  result: FillApplicationResponse
+  onSubmitted: () => void
+}) {
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const filled = result.fields.filter((f) => f.status === 'filled')
+  const needsInput = result.fields.filter((f) => f.status === 'needs_input')
+  const skipped = result.fields.filter((f) => f.status === 'skipped')
+
+  async function markSubmitted() {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await updateApplication(jobId, { status: 'applied' })
+      setSubmitted(true)
+      onSubmitted()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="ats-fill-result">
+      <h4>Application Filled</h4>
+
+      {result.error && (
+        <div className="job-card__error">
+          Filling stopped early: {result.error}. Partial fill is fine — review what's below and finish the rest by hand.
+        </div>
+      )}
+
+      <div className="ats-fill-result__row">
+        <span className={result.resume_uploaded ? 'ats-field--filled' : 'ats-field--needs-input'}>
+          {result.resume_uploaded ? '✓' : '⚠'} Resume
+        </span>
+        {result.resume_error && <span className="ats-field__reason"> — {result.resume_error}</span>}
+      </div>
+
+      {filled.map((f) => (
+        <div className="ats-fill-result__row" key={f.label}>
+          <span className="ats-field--filled">✓ {f.label}</span>
+        </div>
+      ))}
+
+      {needsInput.length > 0 && (
+        <p className="ats-fill-result__summary-line">⚠ {needsInput.length} field{needsInput.length === 1 ? '' : 's'} need your attention</p>
+      )}
+      {needsInput.map((f) => (
+        <div className="ats-fill-result__row" key={f.label}>
+          <span className="ats-field--needs-input">⚠ {f.label}</span>
+          <span className="ats-field__reason"> — {f.reason}</span>
+        </div>
+      ))}
+
+      {skipped.length > 0 && (
+        <p className="ats-fill-result__summary-line">⚠ {skipped.length} optional/skipped field{skipped.length === 1 ? '' : 's'}</p>
+      )}
+      {skipped.map((f) => (
+        <div className="ats-fill-result__row" key={f.label}>
+          <span className="ats-field--skipped">— {f.label}</span>
+          <span className="ats-field__reason"> ({f.reason})</span>
+        </div>
+      ))}
+
+      <p className="app-question__hint">
+        The browser has been opened to the real application page with the above filled in. Review everything,
+        then press Submit in that browser yourself — JobOS never submits automatically.
+      </p>
+
+      {error && <div className="job-card__error">{error}</div>}
+      <button type="button" className="btn btn--primary" disabled={submitting || submitted} onClick={markSubmitted}>
+        {submitted ? 'Marked Applied' : submitting ? 'Marking…' : 'I Submitted'}
+      </button>
+    </div>
+  )
+}
+
 export function ApplicationPreparation({ jobId }: Props) {
   const { data: preparations, loading, error, reload } = useAsync(() => listApplicationPreparations(jobId), [jobId])
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -204,6 +297,9 @@ export function ApplicationPreparation({ jobId }: Props) {
   const [detailLoading, setDetailLoading] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [filling, setFilling] = useState(false)
+  const [fillResult, setFillResult] = useState<FillApplicationResponse | null>(null)
+  const [fillError, setFillError] = useState<string | null>(null)
 
   useEffect(() => {
     if (preparations && preparations.length > 0 && selectedId === null) {
@@ -258,6 +354,20 @@ export function ApplicationPreparation({ jobId }: Props) {
     }
   }
 
+  async function handleFillApplication() {
+    if (selectedId === null) return
+    setFilling(true)
+    setFillError(null)
+    try {
+      const result = await fillApplication(jobId, selectedId)
+      setFillResult(result)
+    } catch (err) {
+      setFillError(errorMessage(err))
+    } finally {
+      setFilling(false)
+    }
+  }
+
   if (loading) return <div className="state state-loading">Loading application preparation…</div>
   if (error) {
     return (
@@ -301,8 +411,24 @@ export function ApplicationPreparation({ jobId }: Props) {
           <button type="button" className="btn btn--secondary btn--small" disabled={busy} onClick={handleRegenerate}>
             {busy ? 'Regenerating…' : 'Regenerate'}
           </button>
+          <button
+            type="button"
+            className="btn btn--primary btn--small"
+            disabled={filling || detail?.status !== 'ready'}
+            title={detail?.status !== 'ready' ? 'Resolve all required answers first' : undefined}
+            onClick={handleFillApplication}
+          >
+            {filling ? 'Opening browser…' : 'Fill Application'}
+          </button>
         </div>
       </div>
+
+      {fillError && <div className="job-card__error">{fillError}</div>}
+      {fillResult && (
+        <section className="page-section">
+          <FillResultSummary jobId={jobId} result={fillResult} onSubmitted={() => selectedId !== null && refreshDetail(selectedId)} />
+        </section>
+      )}
 
       <section className="page-section">
         <h3>Resume</h3>

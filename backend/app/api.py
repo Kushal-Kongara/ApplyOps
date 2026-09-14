@@ -31,6 +31,7 @@ from app.application_prep.models import PREPARATION_STATUSES, QUESTION_CATEGORIE
 from app.application_prep.profile import DEFAULT_APPLICANT_PROFILE_PATH, ApplicantProfileError
 from app.application_prep.service import NoApprovedResumeError
 from app.applications import ApplicationError, parse_datetime_arg, validate_status
+from app.ats import service as ats_service
 from app.profile import Profile, ProfileError, load_profile
 from app.resume import service as resume_service
 from app.resume.master import DEFAULT_MASTER_RESUME_PATH, MasterResumeError
@@ -902,5 +903,66 @@ def generate_application_preparation(
     except MasterResumeError as exc:
         raise HTTPException(status_code=409, detail={"error": "master_resume_missing", "message": str(exc)}) from exc
     return _preparation_detail(connection, row)
+
+
+# --- ATS form filling ------------------------------------------------------
+#
+# Opens a real, visible browser and fills what it can confidently
+# recognize on a real Lever/Ashby/Greenhouse application page -- never
+# submits, never marks the job applied. That's a separate, explicit user
+# action (see `PATCH /api/applications/{job_id}` below).
+
+
+class FilledFieldResponse(BaseModel):
+    label: str
+    status: str
+    value: str | None
+    reason: str
+
+
+class FillApplicationRequest(BaseModel):
+    preparation_id: int
+
+
+class FillApplicationResponse(BaseModel):
+    ats: str | None
+    application_url: str
+    fields: list[FilledFieldResponse]
+    resume_uploaded: bool
+    resume_error: str | None
+    error: str | None
+
+
+@app.post("/api/jobs/{job_id}/fill-application", response_model=FillApplicationResponse)
+def fill_application(
+    job_id: str,
+    payload: FillApplicationRequest,
+    connection: sqlite3.Connection = Depends(get_connection),
+) -> FillApplicationResponse:
+    """Open the job's real application page in a visible browser and fill
+    what's confidently recognized. Requires an approved resume version and
+    a matching application preparation. Never clicks submit; the browser
+    stays open (for as long as this server process keeps running) for the
+    user to review and finish by hand.
+    """
+    job_row = _require_job(connection, job_id)
+    try:
+        result = ats_service.fill_application(
+            connection, job_row, payload.preparation_id, applicant_profile_path=APPLICANT_PROFILE_PATH,
+        )
+    except ats_service.UnsupportedAtsError as exc:
+        raise HTTPException(status_code=409, detail={"error": "unsupported_ats", "message": str(exc)}) from exc
+    except ats_service.AtsNotImplementedError as exc:
+        raise HTTPException(status_code=409, detail={"error": "ats_not_implemented", "message": str(exc)}) from exc
+    except ats_service.PreparationNotReadyError as exc:
+        raise HTTPException(status_code=409, detail={"error": "preparation_not_ready", "message": str(exc)}) from exc
+    except ApplicantProfileError as exc:
+        raise HTTPException(status_code=409, detail={"error": "applicant_profile_missing", "message": str(exc)}) from exc
+
+    return FillApplicationResponse(
+        ats=result.ats, application_url=result.application_url,
+        fields=[FilledFieldResponse(label=f.label, status=f.status, value=f.value, reason=f.reason) for f in result.fields],
+        resume_uploaded=result.resume_uploaded, resume_error=result.resume_error, error=result.error,
+    )
 
 

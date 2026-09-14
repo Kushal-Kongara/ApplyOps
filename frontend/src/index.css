@@ -1050,3 +1050,46 @@ input:disabled {
   display: flex;
   gap: 8px;
 }
+
+/* ---------- ATS fill result ---------- */
+
+.ats-fill-result {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.ats-fill-result h4 {
+  margin: 0 0 10px;
+}
+
+.ats-fill-result__row {
+  font-size: 13px;
+  padding: 3px 0;
+}
+
+.ats-fill-result__summary-line {
+  color: var(--warn);
+  font-weight: 600;
+  font-size: 13px;
+  margin: 10px 0 2px;
+}
+
+.ats-field--filled {
+  color: var(--accent);
+}
+
+.ats-field--needs-input {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.ats-field--skipped {
+  color: var(--text-faint);
+}
+
+.ats-field__reason {
+  color: var(--text-muted);
+  font-size: 12px;
+}

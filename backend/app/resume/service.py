@@ -134,3 +134,44 @@ def generate_resume_version(
         rewrite_provenance=[asdict(a) for a in rewrite_attempts],
     )
     return database.get_resume_version(connection, resume_id)
+
+
+def recompile_resume_version(
+    connection: sqlite3.Connection,
+    resume_id: int,
+    *,
+    resumes_root: Path = storage.DEFAULT_RESUMES_ROOT,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> sqlite3.Row | None:
+    """Recompile an *existing* version's already-stored `latex_source` --
+    e.g. a version generated before a local compiler was available. Never
+    touches `version`, `status`, or `approved_at`; an approved version
+    stays approved. Returns `None` if `resume_id` doesn't exist.
+    """
+    row = database.get_resume_version(connection, resume_id)
+    if row is None:
+        return None
+
+    build_dir = storage.ensure_version_dir(row["job_unique_key"], row["version"], resumes_root)
+
+    pdf_path: str | None = None
+    page_count: int | None = None
+    try:
+        result: CompileResult = compile_latex(row["latex_source"], build_dir, which=which, run=run)
+    except LatexCompilerUnavailableError as exc:
+        compiler_status = "unavailable"
+        compile_log = str(exc)
+    else:
+        compile_log = result.log
+        if result.success:
+            compiler_status = "compiled"
+            page_count = result.page_count
+            pdf_path = str(build_dir / "resume.pdf")
+        else:
+            compiler_status = "failed"
+
+    return database.update_resume_version_compilation(
+        connection, resume_id,
+        compiler_status=compiler_status, pdf_path=pdf_path, compile_log=compile_log, page_count=page_count,
+    )

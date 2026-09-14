@@ -1230,6 +1230,37 @@ def approve_resume_version(
     return get_resume_version(connection, resume_id)
 
 
+def update_resume_version_compilation(
+    connection: sqlite3.Connection,
+    resume_id: int,
+    *,
+    compiler_status: str,
+    pdf_path: str | None,
+    compile_log: str | None,
+    page_count: int | None,
+    now: datetime | None = None,
+) -> sqlite3.Row | None:
+    """Recompile an *existing* version's already-stored `latex_source` and
+    update only its compile metadata -- never its `version`, `status`, or
+    `approved_at`. For fixing a version that was generated before a local
+    compiler was available, without forcing a re-approval of a new version.
+    """
+    now = now or utcnow()
+    if get_resume_version(connection, resume_id) is None:
+        return None
+
+    connection.execute(
+        """
+        UPDATE resume_versions
+           SET compiler_status = ?, pdf_path = ?, compile_log = ?, page_count = ?, updated_at = ?
+         WHERE id = ?
+        """,
+        (compiler_status, pdf_path, compile_log, page_count, _to_iso(now), resume_id),
+    )
+    connection.commit()
+    return get_resume_version(connection, resume_id)
+
+
 # --- application_preparations / application_answers --------------------
 #
 # One preparation per job attempt; one answer row per question in it (the

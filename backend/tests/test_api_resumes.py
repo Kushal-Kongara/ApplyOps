@@ -1,7 +1,8 @@
 """API tests for the resume endpoints. Master resume path/resumes root are
-patched to temp files/dirs per test — no dependency on real local config or
-a real LaTeX install (this machine's real "no compiler" behavior is exactly
-what's exercised for the compiler-unavailable path).
+patched to temp files/dirs per test — no dependency on real local config,
+and no dependency on whether a real LaTeX compiler happens to be installed
+on the machine running these tests (the compiler-unavailable path is
+exercised via a mock, not by relying on the environment lacking one).
 """
 
 import json
@@ -107,9 +108,16 @@ class LatexAndPdfEndpointsTest(ResumeApiTestCase):
         self.assertIn(r"\documentclass", response.json()["latex_source"])
 
     def test_pdf_endpoint_returns_compiler_unavailable_when_no_compiler_present(self):
-        # This test machine has no LaTeX compiler installed, so a real
-        # (unmocked) generation genuinely hits the unavailable path.
-        created = self.client.post(f"/api/jobs/{self.job_id}/resumes").json()
+        # Forces the "no compiler" path regardless of whether this machine
+        # actually has one installed -- api.py deliberately doesn't expose
+        # which/run injection through the HTTP layer, so the mock targets
+        # `compile_latex` itself at the name `app.resume.service` calls it
+        # by (a real interception point, unlike patching `shutil.which`,
+        # which can't affect a default parameter already bound at import time).
+        from app.resume.compiler import LatexCompilerUnavailableError
+
+        with mock.patch("app.resume.service.compile_latex", side_effect=LatexCompilerUnavailableError("no compiler")):
+            created = self.client.post(f"/api/jobs/{self.job_id}/resumes").json()
         response = self.client.get(f"/api/resumes/{created['id']}/pdf")
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["error"], "latex_compiler_unavailable")

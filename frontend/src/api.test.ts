@@ -3,6 +3,7 @@ import {
   addApplicationQuestion,
   buildJobsQueryString,
   createApplicationPreparation,
+  fillApplication,
   generateResume,
   parseErrorDetail,
   resumePdfUrl,
@@ -145,5 +146,14 @@ describe('application preparation API construction', () => {
     expect(url).toBe('/api/application-answers/7')
     expect(init.method).toBe('PATCH')
     expect(JSON.parse(init.body)).toEqual({ answer: 'My edited answer' })
+  })
+
+  it('fillApplication posts the preparation id to the job fill-application endpoint', async () => {
+    const fetchMock = stubFetch()
+    await fillApplication('greenhouse:acme:1', 9)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/jobs/greenhouse%3Aacme%3A1/fill-application')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({ preparation_id: 9 })
   })
 })

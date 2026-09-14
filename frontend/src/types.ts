@@ -254,3 +254,23 @@ export interface AddQuestionPayload {
   category: QuestionCategory
   required?: boolean
 }
+
+// --- ATS form filling ------------------------------------------------------
+
+export type FieldFillStatus = 'filled' | 'needs_input' | 'skipped' | 'unsupported'
+
+export interface FilledField {
+  label: string
+  status: FieldFillStatus
+  value: string | null
+  reason: string
+}
+
+export interface FillApplicationResponse {
+  ats: string | null
+  application_url: string
+  fields: FilledField[]
+  resume_uploaded: boolean
+  resume_error: string | null
+  error: string | null
+}
