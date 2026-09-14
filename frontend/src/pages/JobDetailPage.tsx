@@ -63,6 +63,23 @@ export function JobDetailPage({ jobId, onBack }: Props) {
               </div>
             </header>
 
+            {/* Resume generation and application prep come first -- they're
+                the actionable next steps after opening a job (Generate
+                Resume → Preview → Approve → Prepare Application → Fill
+                Application). Reference/read-only sections (match
+                breakdown, status, the raw job description) follow, since
+                burying the "Generate Resume" controls below them was the
+                reason it wasn't visible without scrolling several screens. */}
+            <section className="page-section">
+              <h2>Tailored Resume</h2>
+              <ResumeWorkspace jobId={jobId} />
+            </section>
+
+            <section className="page-section">
+              <h2>Application Preparation</h2>
+              <ApplicationPreparation jobId={jobId} />
+            </section>
+
             <section className="page-section">
               <h2>Match Breakdown</h2>
               <div className="job-card__breakdown job-detail__breakdown">
@@ -135,16 +152,6 @@ export function JobDetailPage({ jobId, onBack }: Props) {
             <section className="page-section">
               <h2>Job Description</h2>
               <pre className="job-detail__description">{job.description}</pre>
-            </section>
-
-            <section className="page-section">
-              <h2>Tailored Resume</h2>
-              <ResumeWorkspace jobId={jobId} />
-            </section>
-
-            <section className="page-section">
-              <h2>Application Preparation</h2>
-              <ApplicationPreparation jobId={jobId} />
             </section>
           </>
         )}
